@@ -1,0 +1,5396 @@
+"""console_ui.py — Radar-Guard 관제 앱 [노트북]  · 화면 계층 v2.0
+
+  실행: [내 PC PowerShell]
+      # 공개본 저장소 루트에서 실행
+      python src/console_ui.py                        # 데모 모드 (젯슨 불필요)
+      python src/console_ui.py --live 192.168.0.50    # 젯슨 실데이터
+      python src/console_ui.py --live 127.0.0.1       # sim_jetson.py 와 루프백 검증
+
+  필요 패키지: pip install pyqt5 pyqtgraph numpy pyopengl
+    (pyopengl 이 없으면 3D 대신 2D 측면도로 자동 대체된다 — 동작엔 지장 없음)
+  RAG/LLM 은 있을 때만 쓴다(없어도 탐지·표시·즉시조치는 정상):
+      ollama serve && ollama pull gemma2:2b && ollama pull bge-m3
+      docker start radar-guard-db
+
+═══ 이 파일이 하는 일 / 하지 않는 일 ═══
+  한다   : 화면 구조 · 정보 위계 · 색 · 간격 · 창 구성
+  안 한다: 판정, 레이더 수신, 차단기 제어, SOP 검색/LLM 호출
+           ↑ 전부 radar_core.py 의 클래스를 그대로 import 해서 쓴다.
+             복붙이 아니라 같은 코드 객체다 — 로직이 갈라질 수 없다.
+
+  ⚠ 2026-08-01 파일 구성이 바뀌었다:
+      radar_core.py   수신·자세추정·SOP검색·공용위젯   (화면과 무관한 전부)
+      console_ui.py   이 파일. 화면 전부 + 실행 진입점
+    v1 화면은 _구버전보관/코드/console_ui_v1_0801_최종.py 에 보관.
+
+═══ v1 대비 무엇을 왜 바꿨나 ═══
+  1. 좌측 고정 네비게이션
+       v1 은 화면 이동이 '← 개요' 버튼 하나 + 하단 버튼 9개였다. 지금 어느 화면에
+       있는지, 갈 수 있는 곳이 어디인지가 화면에 없었다.
+       ⚠ 단, 미확인(UNACK) 경보 중에는 네비가 잠긴다. 경보를 두고 다른 화면으로
+         떠나는 경로가 있으면 안 된다 (v1 의 강제 복귀 로직과 동일한 목적).
+
+  2. 조치 가이드를 별도 OS 창 → 인앱 우측 드로어
+       v1 의 SopPopup 은 독립 최상위 윈도우였다. 듀얼모니터·화면 밖·뒤로 숨음이
+       전부 가능했고 경보 상황에서 창을 찾아 헤매게 된다.
+       → 본 창 안에서 오른쪽으로 밀려 들어온다. 절대 화면 밖으로 못 나간다.
+
+  3. 개발 정보와 관제 정보 분리
+       v1 개요 화면에 127.0.0.1 / seq 1734 / pgvector / bge-m3 / gemma2:2b /
+       임계 0.1898 이 그대로 있었다. 근무자가 볼 정보가 아니다.
+       → 대시보드에는 '연결됨 · 96ms · 유실 0' 처럼 운용상 의미 있는 것만 남기고,
+         모델명·포트·접속 문자열·임계값은 [설정] 의 AI·SOP / 판정 / 진단 탭으로
+         보낸다. 삭제가 아니라 이동이다 — 원래 그 탭들이 이미 있었다.
+
+  4. 빨강의 역할을 하나로
+       v1 경보 화면은 배너·수치·로그·버튼·구역카드가 전부 빨강이었다. 다 중요해
+       보이면 아무것도 중요하지 않다.
+       → 빨강 = ① 활성 경보 배너 ② 지금 눌러야 할 [조치 방법] ③ 차단된 구역.
+         수치는 경보 중에도 흰색을 유지한다. 시선의 종착점을 하나로 만든다.
+       → 드로어의 '확인했습니다' 는 빨강에서 시안으로. 확인은 위험한 조작이 아니다.
+
+  5. 확신도를 지표로 승격 / '포인트 개수' 는 강등
+       v1 은 대형 지표 4개가 높이·움직임·포인트수·이상도였고, 판정 확신도는
+       로그 한 줄에만 있었다. 포인트 1개를 크게 띄우는 건 "판정이 점 1개에
+       걸려 있다"를 광고하는 셈이다.
+       → 확신도는 경보 요약 패널 상단으로, 포인트 수는 4번째 지표로 유지하되
+         '누적 기준'을 함께 적어 오해를 없앤다.
+
+  6. 로그 출처 구분
+       젯슨이 보낸 영문 원문과 이 앱이 만든 한글 문장이 섞여 같은 사건이 두 번
+       찍혔다. 지우지 않는다(감사 기록이다). 대신 젯슨 원문에는 태그를 달고
+       색을 낮춰, 중복이 아니라 '원문 + 해석'으로 읽히게 한다.
+
+═══ 경보 상태기계 (ISA-18.2) — v1 과 완전히 동일 ═══
+  NORMAL ──경보──> UNACK(점멸·소리) ──확인함──> ACK(점멸·소리 정지, 상황 지속)
+         <──상황 종료(사람이 누름)──
+  ⚠ 자동 해제는 없다. ⚠ '확인함'은 소리를 끄는 것이지 경보를 지우는 것이 아니다.
+"""
+import re
+import sys
+import time
+import json
+import threading
+import argparse
+from collections import deque
+from html import escape as html_escape
+
+from PyQt5 import QtCore, QtGui, QtWidgets
+import pyqtgraph as pg
+
+# ── 로직 계층. 복사하지 않고 import 한다 → 같은 코드 객체 ─────────────────
+import facility as fac
+import radar_core as core
+from radar_core import (
+    RadarLink, INSTANT_ACTION, INSTANT_ACTION_UNKNOWN,
+    PowerPopup, RestorePopup, GraphPopup, SettingsPopup,
+    RAG_OK, EMBED_MODEL, HAS_GL,
+    ST_NORMAL, ST_UNACK, ST_ACK,
+)
+from radar_common import (
+    LINK_TIMEOUT, CMD_RESOLVE, CMD_RESTORE, CMD_ENTER, CMD_EXIT, CEILING_H,
+    PH_READY, PH_LIVE, PHASE_KO, parse_pre_alert,
+    EVENT_KO, ZONE_IDS, ZONE_KO, RADAR_ZONE, ZONE_DEVICE, zone_equipped,
+    SEV_KO, GATE_META, REJECT_KO, EVIDENCE_KO, AUTO_TRIP_EVENTS,
+    sev_color, event_sev, SEV_RANK,
+    BG, PANEL, PANEL_HI, PANEL_LO, EDGE, TXT, DIM, FAINT,
+    CYAN, GREEN, AMBER, RED, GRID,
+    BG_ALERT, BG_OK, BG_WARN, BG_SEL, SEV_BG, SEV_BG_HI, RADIUS, RADIUS_SM,
+)
+
+APP_VERSION = 'v2.0'
+# Ollama는 한 번에 한 작업만 수행한다. SOP 사전 준비와 질의가 겹치면 CPU를
+# 서로 빼앗아 둘 다 늦어지므로, UI 밖 작업 스레드에서만 직렬화한다.
+AI_WORK_LOCK = threading.Lock()
+
+# ⚠ [10/06 결정] 경보 화면에서 생성형 AI 를 뺀다 — 즉시조치·공식 원문·실측
+#   브리핑만 띄운다. T-CC04~05b 에서 프롬프트로는 위험 문장을 못 막는다는 것을
+#   확인했다. False 면 6종 SOP 사전 생성(prewarm)도, 경보 시 요약 생성도 없다.
+#   [10/08 실측 T-CC06d 조건 B] prewarm 이 경보가 없어도 qwen2.5:3b(2.1 GB)를
+#   올려 챗봇 모델과 서로 밀어냈다 — 첫 질문 적재 25~30초, 생성 중 가용 287 MB.
+#   되돌릴 때는 True 로만 바꾼다(prewarm·_gen_facts 코드는 남겨 뒀다).
+ALARM_SCREEN_LLM = False
+# ⚠ [10/09 T-CC07b] 경보 화면의 공식 원문은 사람이 고른 문장만 띄운다
+#   (eval/alarm_pinned_sentences.json 15문장). 임베딩 검색은 T-CC04 에서 6종 중
+#   4종이 다른 대목을 골랐다(협착 경보에 전기화상·뇌진탕). True 면 예전 검색
+#   경로(SopEngineV2._search)로 돌아간다 — 코드는 남겨 뒀다.
+ALARM_EMBED_SEARCH = False
+# 워밍업과 챗봇 요청이 같은 값을 써야 모델이 중간에 내려가지 않는다.
+#   -1 = 앱이 떠 있는 동안 유지. 창을 닫을 때 keep_alive 0 요청으로 내린다.
+#   ⚠ 앱이 비정상 종료되면 모델이 남는다 → `ollama stop` 으로 내린다.
+CHAT_KEEP_ALIVE = -1
+# [10/08 결정] 챗봇 전용 모델. 챗봇·워밍업·종료 시 내리기가 이것을 쓴다.
+#   radar_core.LLM_MODEL(경보 요약용, 지금은 꺼져 있다)과 별개다.
+CHAT_MODEL = 'exaone3.5:2.4b'
+# 챗봇 기본 변형(CHAT_VARIANTS 의 키). T-CC06c·06d 에서 잰 조합이다.
+CHAT_VARIANT = 'J3'
+# 워밍업 재시도 — Ollama 가 앱보다 늦게 뜨는 경우. 실패 문구는 마지막에만 낸다.
+CHAT_WARM_TRIES = 3
+CHAT_WARM_GAP_SEC = 10
+# [10/17 T-CC07f §3] 생성 길이 상한 100 → 150. 10/10 측정에서 F-02·F-03·I-05 가
+#   100 토큰에서 잘렸다. 'baseline' 은 100 그대로(test_chat_prompt_same 고정).
+CHAT_NUM_PREDICT = 150
+# [10/10 T-CC07c] 워밍업 방식 B — 1토큰 워밍업 뒤 실제 프롬프트 1개(평가셋
+#   EA-01)를 돌리고 버린다. ⚠ [10/09 실측] 첫 질문 8.9 → 6.1~6.3초, 워밍업 +8.6초.
+CHAT_WARM_QUESTION = '작업자가 낙상했어, 뭐부터 해야 돼?'
+
+
+def chat_model_keep(keep_alive, timeout, prompt='안녕', num_predict=1):
+    """챗봇 모델을 올려 두거나(CHAT_KEEP_ALIVE) 내린다(0). 답은 버린다."""
+    import urllib.request
+    body = {'model': CHAT_MODEL, 'stream': False, 'keep_alive': keep_alive}
+    if keep_alive != 0:
+        # num_ctx 가 챗봇 요청과 다르면 Ollama 가 모델을 다시 올린다 → 같은 값.
+        body.update(prompt=prompt, options={
+            'num_ctx': 2048, 'num_predict': num_predict,
+            'temperature': CHAT_VARIANTS[CHAT_VARIANT].get('temperature', 0.2)})
+    req = urllib.request.Request(
+        core.OLLAMA_URL, data=json.dumps(body).encode('utf-8'),
+        headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        response.read()
+
+
+class SettingsPopupV2(SettingsPopup):
+    """설정 화면의 모델 표시만 챗봇 모델로 바꾼다.
+
+    [10/09 T-CC07b2] radar_core 는 '생성 모델' 과 Ollama 점검 문구에
+    core.LLM_MODEL(gemma2 — 지금은 꺼진 경보 요약용)을 찍는다. 실제로 답하는
+    것은 CHAT_MODEL 이다. radar_core 를 고치지 않고 여기서 표시만 덮는다.
+    """
+
+    def _ro(self, val):
+        return super()._ro(CHAT_MODEL if val == core.LLM_MODEL else val)
+
+    def _test_ai(self):
+        # 부모의 _test_ai 와 같은 절차, 문구의 모델 이름만 다르다.
+        self.ai_res.setText('확인 중…')
+        self.ai_res.setStyleSheet(f'color:{DIM};border:none;')
+
+        def _w():
+            import urllib.request
+            try:
+                urllib.request.urlopen(core.OLLAMA_URL.replace(
+                    '/api/generate', '/api/tags'), timeout=4).read()
+                msg, col = f'Ollama 응답 정상 · {CHAT_MODEL}', GREEN
+            except Exception as e:
+                msg, col = f'실패: {type(e).__name__} — ollama serve 확인', RED
+            self.ai_res.setText(msg)
+            self.ai_res.setStyleSheet(f'color:{col};border:none;')
+
+        threading.Thread(target=_w, daemon=True).start()
+
+# ══════════════════════════════════════════════════════════════════════
+# 0. 타이포그래피
+# ══════════════════════════════════════════════════════════════════════
+#  ⚠ Pretendard 는 좋은 선택이지만 없는 PC 에서 조용히 다른 폰트로 대체되면서
+#    글자폭이 달라져 레이아웃이 밀린다. 설치돼 있을 때만 쓰고, 아니면 윈도우
+#    기본 탑재 고딕으로 간다. '있으면 좋고 없어도 안 깨진다'가 기준이다.
+FONT_CANDIDATES = ['Pretendard', 'Pretendard Variable', 'Noto Sans KR',
+                   'Malgun Gothic', 'Gulim']
+FONT = 'Malgun Gothic'
+
+
+def resolve_font():
+    """설치된 폰트 중 우선순위가 가장 높은 것을 고른다. QApplication 생성 후 호출."""
+    global FONT
+    fams = set(QtGui.QFontDatabase().families())
+    if not fams:
+        # ⚠ [8/02 실측] families() 가 비면 아래 루프가 한 번도 매칭되지 않아 108줄
+        #   초기값이 조용히 유지된다. 데모 PC 에서 폰트 캐시가 깨지거나 Noto Sans KR
+        #   이 빠지면 지금 구조로는 아무 신호 없이 글자가 밀린다 — 그래서 경고만
+        #   남긴다. 동작(초기값 유지)은 바꾸지 않는다.
+        print(f'⚠ QFontDatabase 가 폰트를 하나도 찾지 못함 — {FONT}(초기값)로 진행',
+              file=sys.stderr)
+    for f in FONT_CANDIDATES:
+        if f in fams:
+            FONT = f
+            break
+    core.FONT = FONT        # v1 에서 가져다 쓰는 팝업들도 같은 폰트를 쓰게 한다
+    return FONT
+
+
+# 8px 그리드
+SP1, SP2, SP3, SP4, SP5, SP6 = 4, 8, 12, 16, 24, 32
+
+# 폰트 단계 (pt)
+F_DISPLAY = 26     # 대시보드 제목
+F_HERO = 30        # 주 수치
+F_H1 = 19          # 화면 제목 · 상태 제목
+F_H2 = 15          # 카드 제목
+F_BODY = 11        # 본문 · 버튼
+F_LABEL = 10       # 라벨
+F_CAP = 9          # 캡션
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 1. UI 키트
+# ══════════════════════════════════════════════════════════════════════
+def f(size=F_BODY, bold=False):
+    q = QtGui.QFont(FONT, size)
+    q.setBold(bold)
+    return q
+
+
+f_ = f          # paintEvent 안에서 f 는 좌표변환에 쓰므로 폰트용 별칭
+
+
+def lb(text='', size=F_BODY, color=TXT, bold=False, wrap=False, align=None,
+       spacing=0):
+    w = QtWidgets.QLabel(text)
+    w.setFont(f(size, bold))
+    css = f'color:{color};border:none;background:transparent;'
+    if spacing:
+        css += f'letter-spacing:{spacing}px;'
+    w.setStyleSheet(css)
+    w.setWordWrap(wrap)
+    if align is not None:
+        w.setAlignment(align)
+    return w
+
+
+def eyebrow(text):
+    """카드 상단 소제목 — 대문자 + 자간. 정보가 아니라 '구획 이름'임을 알린다."""
+    return lb(text, F_CAP, DIM, spacing=1)
+
+
+def card(bg=PANEL, border=None, radius=RADIUS):
+    fr = QtWidgets.QFrame()
+    b = f'1px solid {border}' if border else 'none'
+    fr.setStyleSheet(f'QFrame{{background:{bg};border:{b};border-radius:{radius}px;}}')
+    return fr
+
+
+def vbox(w, m=SP4, s=SP3):
+    v = QtWidgets.QVBoxLayout(w)
+    v.setContentsMargins(m, m, m, m)
+    v.setSpacing(s)
+    return v
+
+
+def hbox(w=None, m=0, s=SP3):
+    h = QtWidgets.QHBoxLayout(w) if w is not None else QtWidgets.QHBoxLayout()
+    h.setContentsMargins(m, m, m, m)
+    h.setSpacing(s)
+    return h
+
+
+# ── 버튼 ──────────────────────────────────────────────────────────────
+#   kind: 'primary'(시안·주 액션) / 'danger'(빨강·경보 대응) /
+#         'ghost'(외곽선) / 'quiet'(배경만)
+def button(text, kind='ghost', size=F_BODY, height=36, width=None):
+    b = QtWidgets.QPushButton(text)
+    b.setFont(f(size, bold=(kind in ('primary', 'danger'))))
+    b.setMinimumHeight(height)
+    b.setCursor(QtCore.Qt.PointingHandCursor)
+    if width:
+        b.setFixedWidth(width)
+    if kind == 'primary':
+        css = (f'QPushButton{{background:{CYAN};color:#062028;border:none;'
+               f'border-radius:{RADIUS_SM}px;padding:4px 14px;}}'
+               f'QPushButton:hover{{background:#67E8F9;}}'
+               f'QPushButton:pressed{{background:#0EA5BE;}}'
+               f'QPushButton:disabled{{background:{PANEL_HI};color:{FAINT};}}')
+    elif kind == 'danger':
+        css = (f'QPushButton{{background:{RED};color:#FFFFFF;border:none;'
+               f'border-radius:{RADIUS_SM}px;padding:4px 14px;}}'
+               f'QPushButton:hover{{background:#F87171;}}'
+               f'QPushButton:pressed{{background:#DC2626;}}'
+               f'QPushButton:disabled{{background:{PANEL_HI};color:{FAINT};}}')
+    elif kind == 'quiet':
+        css = (f'QPushButton{{background:{PANEL_HI};color:{TXT};border:none;'
+               f'border-radius:{RADIUS_SM}px;padding:4px 14px;}}'
+               f'QPushButton:hover{{background:{BG_SEL};color:{CYAN};}}'
+               f'QPushButton:disabled{{background:{PANEL_LO};color:{FAINT};}}')
+    else:
+        css = (f'QPushButton{{background:transparent;color:{TXT};'
+               f'border:1px solid {EDGE};border-radius:{RADIUS_SM}px;'
+               f'padding:4px 14px;}}'
+               f'QPushButton:hover{{border-color:{CYAN};color:{CYAN};'
+               f'background:{BG_SEL};}}'
+               f'QPushButton:disabled{{color:{FAINT};border-color:{GRID};}}')
+    b.setStyleSheet(css)
+    return b
+
+
+INPUT_QSS = (f'background:{PANEL_HI};color:{TXT};border:1px solid {EDGE};'
+             f'border-radius:{RADIUS_SM}px;padding:6px 10px;')
+TABLE_QSS = (f'QTableWidget{{background:{PANEL};color:{TXT};'
+             f'gridline-color:{GRID};border:1px solid {EDGE};'
+             f'border-radius:{RADIUS_SM}px;}}'
+             f'QTableWidget::item{{padding:4px 6px;}}'
+             f'QHeaderView::section{{background:{PANEL_HI};color:{DIM};'
+             f'border:none;padding:7px 6px;}}')
+SCROLL_QSS = (f'QScrollArea{{background:transparent;border:none;}}'
+              f'QScrollBar:vertical{{background:transparent;width:9px;margin:0;}}'
+              f'QScrollBar::handle:vertical{{background:{EDGE};'
+              f'border-radius:4px;min-height:30px;}}'
+              f'QScrollBar::handle:vertical:hover{{background:{FAINT};}}'
+              f'QScrollBar::add-line,QScrollBar::sub-line{{height:0;}}'
+              f'QScrollBar::add-page,QScrollBar::sub-page{{background:transparent;}}')
+# ⚠ 본문 배경은 PANEL_HI 를 쓴다. PANEL_LO(#0D1420)는 창 배경(#090D18)과 거의
+#   같아서 SOP 가이드 화면에서 본문 영역의 경계가 보이지 않았다.
+TEXT_QSS = (f'QTextEdit{{background:{PANEL_HI};color:{TXT};'
+            f'border:1px solid {EDGE};border-radius:{RADIUS_SM}px;padding:10px;}}'
+            + SCROLL_QSS.replace('QScrollArea', 'QTextEdit'))
+
+
+def styled_combo(items):
+    c = QtWidgets.QComboBox()
+    c.addItems(items)
+    c.setFont(f(F_BODY))
+    c.setMinimumHeight(34)
+    c.setStyleSheet(
+        f'QComboBox{{{INPUT_QSS}}}'
+        f'QComboBox:hover{{border-color:{CYAN};}}'
+        f'QComboBox::drop-down{{border:none;width:22px;}}'
+        f'QComboBox QAbstractItemView{{background:{PANEL_HI};color:{TXT};'
+        f'border:1px solid {EDGE};outline:none;'
+        f'selection-background-color:{CYAN};selection-color:#062028;}}')
+    return c
+
+
+def styled_line(placeholder=''):
+    e = QtWidgets.QLineEdit()
+    e.setPlaceholderText(placeholder)
+    e.setFont(f(F_BODY))
+    e.setMinimumHeight(34)
+    e.setStyleSheet(f'QLineEdit{{{INPUT_QSS}}}QLineEdit:focus{{border-color:{CYAN};}}')
+    return e
+
+
+def scrollable(inner, hbar=False):
+    """1440×900 보다 좁은 화면에서 카드가 잘리거나 겹치지 않도록 감싼다.
+
+    ⚠ QScrollArea 의 viewport 는 Qt 기본 팔레트(밝은 회색)로 '직접 칠한다'.
+      스타일시트로 QScrollArea 배경만 지정하면 viewport 는 그대로 흰색이라
+      다크 화면에 흰 판이 깔리고 흰 글씨가 사라진다(실측: 대시보드 제목 실종).
+      → viewport 의 자동 배경 채움을 끄고 부모 배경이 비치게 한다.
+    """
+    sa = QtWidgets.QScrollArea()
+    sa.setWidgetResizable(True)
+    sa.setFrameShape(QtWidgets.QFrame.NoFrame)
+    sa.setStyleSheet(SCROLL_QSS)
+    sa.setHorizontalScrollBarPolicy(
+        QtCore.Qt.ScrollBarAsNeeded if hbar else QtCore.Qt.ScrollBarAlwaysOff)
+    sa.setWidget(inner)
+    sa.viewport().setAutoFillBackground(False)
+    inner.setAutoFillBackground(False)
+    return sa
+
+
+def as_page(w):
+    """스택 페이지의 배경을 명시한다.
+
+    QMainWindow{background:…} 는 자식 위젯까지 내려가지 않는다. 배경을 칠하지
+    않는 QWidget 은 부모 것이 비치지만, 스타일시트가 걸린 조상이 하나라도 있으면
+    Qt 가 기본 팔레트로 되돌린다. 페이지마다 한 번씩 못 박는 편이 안전하다.
+    """
+    w.setObjectName('rgPage')
+    w.setStyleSheet(f'#rgPage{{background:{BG};}}')
+    return w
+
+
+def apply_dark_palette(app):
+    """앱 전역 다크 팔레트.
+
+    스타일시트를 안 건 위젯(QFileDialog, QMessageBox, 콤보 팝업, 테이블 편집기…)이
+    밝은 기본값으로 뜨는 것을 막는다. 스타일시트는 '보이는 것'만 고치지만
+    팔레트는 '아직 안 만든 것'까지 고친다.
+    """
+    C = QtGui.QColor
+    p = QtGui.QPalette()
+    p.setColor(QtGui.QPalette.Window, C(BG))
+    p.setColor(QtGui.QPalette.WindowText, C(TXT))
+    p.setColor(QtGui.QPalette.Base, C(PANEL))
+    p.setColor(QtGui.QPalette.AlternateBase, C(PANEL_HI))
+    p.setColor(QtGui.QPalette.Text, C(TXT))
+    p.setColor(QtGui.QPalette.Button, C(PANEL))
+    p.setColor(QtGui.QPalette.ButtonText, C(TXT))
+    p.setColor(QtGui.QPalette.BrightText, C(RED))
+    p.setColor(QtGui.QPalette.ToolTipBase, C(PANEL_HI))
+    p.setColor(QtGui.QPalette.ToolTipText, C(TXT))
+    p.setColor(QtGui.QPalette.Link, C(CYAN))
+    p.setColor(QtGui.QPalette.Highlight, C(CYAN))
+    p.setColor(QtGui.QPalette.HighlightedText, C('#062028'))
+    try:
+        p.setColor(QtGui.QPalette.PlaceholderText, C(FAINT))
+    except AttributeError:
+        pass                      # Qt 5.12 이하
+    for role in (QtGui.QPalette.Text, QtGui.QPalette.ButtonText,
+                 QtGui.QPalette.WindowText):
+        p.setColor(QtGui.QPalette.Disabled, role, C(FAINT))
+    app.setPalette(p)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 2. 상태 표시 부품
+# ══════════════════════════════════════════════════════════════════════
+class StatusDot(QtWidgets.QWidget):
+    """색 단독 의존을 피한다 — 채움(정상) / 테두리만(대기) / 사선(경보)."""
+
+    def __init__(self, d=9):
+        super().__init__()
+        self.d = d
+        self.setFixedSize(d + 2, d + 2)
+        self.color = FAINT
+        self.filled = False
+
+    def set(self, color, filled=True):
+        self.color, self.filled = color, filled
+        self.update()
+
+    def paintEvent(self, _):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        c = QtGui.QColor(self.color)
+        p.setPen(QtGui.QPen(c, 1.6))
+        p.setBrush(QtGui.QBrush(c) if self.filled else QtCore.Qt.NoBrush)
+        r = self.d / 2
+        p.drawEllipse(QtCore.QPointF(self.width() / 2, self.height() / 2), r, r)
+        p.end()
+
+
+class StatusCard(QtWidgets.QFrame):
+    """대시보드 상단 장비 카드 한 장.
+
+      [라벨]        ●
+      연결됨                ← 상태 (색으로 의미)
+      96ms · 유실 0         ← 운용상 의미 있는 상세만. 모델명·IP·임계값은 [설정]으로.
+    """
+
+    def __init__(self, title):
+        super().__init__()
+        self.setMinimumWidth(168)
+        self.setMinimumHeight(96)
+        v = vbox(self, SP3, SP1)
+        top = hbox(s=SP2)
+        top.addWidget(eyebrow(title))
+        top.addStretch()
+        self.dot = StatusDot()
+        top.addWidget(self.dot)
+        v.addLayout(top)
+        self.value = lb('확인 중', F_H2, DIM, bold=True)
+        v.addWidget(self.value)
+        self.detail = lb('', F_CAP, FAINT, wrap=True)
+        self.detail.setMinimumHeight(26)
+        v.addWidget(self.detail)
+        v.addStretch()
+        self._paint(EDGE)
+
+    def _paint(self, border):
+        self.setStyleSheet(f'QFrame{{background:{PANEL};border:1px solid {border};'
+                           f'border-radius:{RADIUS}px;}}')
+
+    def set(self, ok, value, detail='', color=None):
+        self.ok = ok
+        c = color or (GREEN if ok else AMBER)
+        self.dot.set(c, filled=ok)
+        self.value.setText(value)
+        self.value.setStyleSheet(f'color:{c};border:none;background:transparent;')
+        self.detail.setText(detail)
+        self._paint(RED if c == RED else EDGE)
+
+
+class MetricTile(QtWidgets.QFrame):
+    """큰 수치 한 칸.  라벨 / 값+단위 / 기준선(작은 글씨)
+
+    ⚠ 최소 높이를 못 박는다. 세로 공간이 모자라면 Qt 는 위젯을 겹쳐서라도
+      집어넣는데(실측: 라벨과 숫자가 포개짐), 관제 화면에서 숫자가 겹치는 건
+      '못 읽는 것'이 아니라 '잘못 읽는 것'이라 더 위험하다.
+    """
+
+    def __init__(self, name, unit='', note='', size=21):
+        super().__init__()
+        self.setMinimumHeight(84)
+        self.setMinimumWidth(96)
+        self.setStyleSheet(f'QFrame{{background:{PANEL_HI};border:none;'
+                           f'border-radius:{RADIUS_SM}px;}}')
+        v = vbox(self, SP2, 2)
+        v.addWidget(lb(name, F_LABEL, DIM))
+        # ⚠ 숫자와 단위를 나란히 두면 칸이 좁아질 때(드로어를 열면 왼쪽 열이
+        #   420px 줄어든다) Qt 가 둘을 겹쳐 그린다 — 실측에서 '0.35m'의 m 이
+        #   숫자 위에 포개졌다. 단위는 아래 캡션으로 내려 겹칠 수 없게 만든다.
+        #   값 글자 크기는 칸 폭에 맞춘 값이다. 30pt 는 '0.35'가 잘려 '0.3'으로
+        #   보였다 — 계측값이 잘리는 건 오독이므로 크기보다 정확성이 우선이다.
+        self.val = lb('—', size, TXT, bold=True)
+        v.addWidget(self.val)
+        self._unit = unit
+        self._note = note
+        self.note = lb(self._caption(note), F_CAP, FAINT)
+        v.addWidget(self.note)
+
+    def _caption(self, note):
+        parts = [p for p in (self._unit, note) if p]
+        return ' · '.join(parts)
+
+    def set(self, text, color=TXT, note=None):
+        self.val.setText(text)
+        self.val.setStyleSheet(f'color:{color};border:none;background:transparent;')
+        if note is not None:
+            self._note = note
+        self.note.setText(self._caption(self._note))
+
+
+class NavButton(QtWidgets.QPushButton):
+    def __init__(self, icon, text):
+        super().__init__(f'  {icon}   {text}')
+        self.setFont(f(F_BODY))
+        self.setCheckable(True)
+        self.setMinimumHeight(42)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setStyleSheet(
+            f'QPushButton{{background:transparent;color:{DIM};border:none;'
+            f'border-radius:{RADIUS_SM}px;text-align:left;padding-left:8px;}}'
+            f'QPushButton:hover{{background:{PANEL_HI};color:{TXT};}}'
+            f'QPushButton:checked{{background:{BG_SEL};color:{CYAN};'
+            f'font-weight:bold;}}'
+            f'QPushButton:disabled{{color:{FAINT};background:transparent;}}')
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 3. 장면 — 3D 포인트 클라우드 / 2D 측면도
+# ══════════════════════════════════════════════════════════════════════
+class SideView(QtWidgets.QWidget):
+    """2D 측면도 — 가로축 X(m), 세로축 바닥 기준 높이(m).
+
+    ⚠ 왜 탑다운 평면도가 아니라 측면도인가:
+      IWR6843ISK-ODS 는 각분해능 약 28°. 수평(x·z) 좌표가 가장 부정확한 축이다.
+      반대로 낙상 판정의 핵심 근거는 h_drop·height 즉 수직축이다.
+      탑다운은 제일 못 믿을 축을 크게 보여주고 결정적인 축을 버린다.
+      측면도는 '바닥 0m — 지금 0.57m — 서있음 1.6m' 가 그림 자체로 읽힌다.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        v = QtWidgets.QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        self.plot = pg.PlotWidget()
+        self.plot.setBackground(PANEL)
+        self.plot.setAspectLocked(True)
+        self.plot.setXRange(-1.7, 1.7)
+        self.plot.setYRange(-0.2, CEILING_H + 0.15)
+        self.plot.setMouseEnabled(x=False, y=False)
+        self.plot.getPlotItem().hideButtons()
+        self.plot.showGrid(x=True, y=True, alpha=0.10)
+        for ax in ('bottom', 'left'):
+            a = self.plot.getAxis(ax)
+            a.setPen(pg.mkPen(EDGE))
+            a.setTextPen(pg.mkPen(FAINT))
+        # 축 제목을 따로 쓰지 않는다 — 기준선 캡션(바닥 / 서 있음 기준 / 센서)이
+        #   이미 무슨 축인지 말한다. 세로 축 제목은 눈금 숫자와 겹쳤다(실측).
+        self.plot.setLabel('bottom', '수평 위치 (m)', color=FAINT)
+        # 기준선 — 이 세 줄이 곧 판정 근거의 눈금이다
+        self._ref(0.0, EDGE, '바닥')
+        self._ref(1.60, GRID, '서 있음 기준')
+        self._ref(CEILING_H, GRID, f'센서 {CEILING_H:.2f}m')
+        self.sc = pg.ScatterPlotItem(size=7, pen=None,
+                                     brush=pg.mkBrush(34, 211, 238, 150))
+        # connect='pairs' — 인체 도식은 끊긴 선분 모음이라 이어 그리면 안 된다
+        self.cap = pg.PlotCurveItem(pen=pg.mkPen(GREEN, width=2.2), connect='pairs')
+        self.hd = pg.ScatterPlotItem(size=11, pen=None, brush=pg.mkBrush(AMBER))
+        for it in (self.sc, self.cap, self.hd):
+            self.plot.addItem(it)
+        v.addWidget(self.plot, 1)
+
+    def _ref(self, y, color, text):
+        ln = pg.InfiniteLine(pos=y, angle=0,
+                             pen=pg.mkPen(color, width=1,
+                                          style=QtCore.Qt.DashLine))
+        self.plot.addItem(ln)
+        t = pg.TextItem(text, color=FAINT, anchor=(0, 1))
+        t.setFont(f(F_CAP))
+        t.setPos(-1.65, y)
+        self.plot.addItem(t)
+
+    def render(self, cloud, pose, sev='normal', hide_shape=False):
+        pt_c, fig_c, hd_c = core.Track3D.sev_colors(sev)
+        if len(cloud):
+            b = QtGui.QColor(pt_c)
+            b.setAlpha(160)
+            self.sc.setData(cloud[:, 0], CEILING_H - cloud[:, 1])
+            self.sc.setBrush(pg.mkBrush(b))
+        if pose and pose['shape_ok'] and not hide_shape:
+            seg = core.Track3D.stick2d(pose)
+            self.cap.setData(seg[:, 0], seg[:, 1])
+            self.cap.setPen(pg.mkPen(fig_c, width=2.2))
+            self.hd.setData([pose['head'][0]], [CEILING_H - pose['head'][1]])
+            self.hd.setBrush(pg.mkBrush(hd_c))
+        else:
+            # 점이 모자라면 형상을 그리지 않는다 — 없는 것을 지어내지 않는다
+            self.cap.setData([], [])
+            self.hd.setData([], [])
+
+
+class SceneView(QtWidgets.QWidget):
+    """3D 포인트 클라우드 ↔ 2D 측면도 전환 컨테이너.
+
+    ⚠ 3D 위젯은 v1 의 Track3D 를 그대로 쓴다(검증된 코드). 자세 추정도 그쪽
+      PoseEstimator 하나만 쓰고 2D 는 그 결과를 받아 그리기만 한다 —
+      두 화면이 서로 다른 것을 말할 수 없다.
+    """
+    MODE_3D, MODE_2D = 0, 1
+
+    def __init__(self):
+        super().__init__()
+        v = QtWidgets.QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        self.stack = QtWidgets.QStackedWidget()
+        self.track = core.Track3D()
+        self.side = SideView()
+        self.stack.addWidget(self.track)
+        self.stack.addWidget(self.side)
+        v.addWidget(self.stack, 1)
+        # stale 은 컨테이너 레벨에서 한 번만 덮는다 (두 화면 모두 가려야 한다)
+        self.veil = QtWidgets.QLabel(self)
+        self.veil.setAlignment(QtCore.Qt.AlignCenter)
+        self.veil.setFont(f(14, True))
+        self.veil.setStyleSheet(
+            f'color:{AMBER};background:rgba(9,13,24,222);'
+            f'border:1px solid {AMBER};border-radius:{RADIUS}px;')
+        self.veil.hide()
+        self._mode = self.MODE_3D if HAS_GL and self.track.gl else self.MODE_2D
+        self.stack.setCurrentIndex(self._mode)
+
+    def resizeEvent(self, e):
+        self.veil.setGeometry(self.rect())
+        super().resizeEvent(e)
+
+    def set_mode(self, mode):
+        if mode == self.MODE_3D and not (HAS_GL and self.track.gl):
+            return False        # OpenGL 이 없으면 3D 로 갈 수 없다 — 조용히 거짓말하지 않는다
+        self._mode = mode
+        self.stack.setCurrentIndex(mode)
+        return True
+
+    def mode(self):
+        return self._mode
+
+    def has_3d(self):
+        return bool(HAS_GL and self.track.gl)
+
+    def set_stale(self, stale, msg=''):
+        self.track.set_stale(False)     # 이중 오버레이 방지 — 우리 것만 쓴다
+        if stale:
+            self.veil.setText(msg)
+            self.veil.setGeometry(self.rect())
+            self.veil.show()
+            self.veil.raise_()
+        else:
+            self.veil.hide()
+
+    def push(self, st, sev='normal', hide_shape=False, incident=None):
+        pose = self.track.push(st, sev, hide_shape, incident)  # 3D 갱신 + 자세 추정
+        if self._mode == self.MODE_2D:
+            self.side.render(self.track.pose.cloud(), pose, sev, hide_shape)
+        return pose
+
+    def redraw(self, sev='normal', hide_shape=False, incident=None):
+        """새 패킷 없이 이미 누적된 값으로 두 위젯을 다시 그린다.
+
+        ⚠ [8/02] set_mode() 는 모드만 바꾸고 렌더는 안 했다 — 3D(track)는
+          push() 가 모드와 무관하게 매 패킷 갱신하지만 2D(side)는
+          MODE_2D 일 때만 갱신돼서, 전환 직후엔 다음 패킷이 올 때까지
+          죽은 색(생성 시 기본값)이 그대로 보였다. ConsoleV2._refresh_scene
+          가 모드 전환 직후 이걸 불러 즉시 맞춘다.
+        """
+        pose = self.track.redraw(sev, hide_shape, incident)
+        if self._mode == self.MODE_2D:
+            self.side.render(self.track.pose.cloud(), pose, sev, hide_shape)
+        return pose
+
+    def reset_camera(self):
+        self.track.reset_camera()
+
+
+class ZoneStrip(QtWidgets.QWidget):
+    """실시간 감시 화면의 '구역 현황' — A/B/C 를 가로로."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(86)
+        self.state = {z: {'bad': False, 'off': False, 'power': 'unknown'}
+                      for z in ZONE_IDS}
+        self.sev = 'normal'
+
+    def update_state(self, st, sev='normal'):
+        zs = st.get('zone_state') or {}
+        bs = ((st.get('breaker') or {}).get('state')) or {}
+        power = st.get('power') or {}
+        volt = power.get('volt')
+        measured = power.get('connected') is True and volt is not None
+        power_state = ('ok' if measured and volt > 0
+                       else 'missing' if measured else 'unknown')
+        for z in ZONE_IDS:
+            self.state[z] = {'bad': zs.get(z, 'NORMAL') == 'ALERT',
+                             'off': bs.get(z, 'ON') != 'ON',
+                             'power': power_state if z == RADAR_ZONE else 'unknown'}
+        self.sev = sev
+        self.update()
+
+    def paintEvent(self, _):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+        n = len(ZONE_IDS)
+        gap = SP2
+        zw = (W - gap * (n - 1)) / n
+        for i, z in enumerate(ZONE_IDS):
+            s, eq = self.state[z], zone_equipped(z)
+            x = i * (zw + gap)
+            hot = eq and (s['bad'] or s['off'] or s['power'] != 'ok')
+            # 경보 중이면 그 등급 색, 차단만 남은 상태면 빨강(전원이 끊긴 사실)
+            hot_c = (sev_color(self.sev) if (s['bad'] and self.sev != 'normal')
+                     else RED if s['off'] else AMBER)
+            if hot:
+                bd, fill = hot_c, SEV_BG.get(self.sev, BG_ALERT)
+            elif eq:
+                bd, fill = EDGE, PANEL_HI
+            else:
+                bd, fill = None, PANEL_LO
+            p.setPen(QtGui.QPen(QtGui.QColor(bd), 1.6) if bd else QtCore.Qt.NoPen)
+            p.setBrush(QtGui.QBrush(QtGui.QColor(fill)))
+            p.drawRoundedRect(QtCore.QRectF(x, 0, zw, H), RADIUS_SM, RADIUS_SM)
+            pad = SP3
+            # 경보 배지를 먼저 오른쪽 위에 놓고, 남은 폭 안에서 이름을 줄인다.
+            #   (v1 은 고정 오프셋으로 그려서 폭이 좁아지면 이름과 겹쳤다)
+            name_w = zw - pad * 2
+            # 배지를 붙이면 이름 칸이 줄어든다. 칸이 좁으면 배지를 포기한다 —
+            #   경보는 이미 카드 테두리(빨강)로 드러나므로 구역 이름이 우선이다.
+            if eq and s['bad'] and zw >= 150:
+                p.setFont(f(F_CAP, True))
+                bw = p.fontMetrics().width('경보') + 12
+                br = QtCore.QRectF(x + zw - pad - bw, 8, bw, 18)
+                p.setPen(QtCore.Qt.NoPen)
+                p.setBrush(QtGui.QBrush(QtGui.QColor(hot_c)))
+                p.drawRoundedRect(br, 9, 9)
+                p.setPen(QtGui.QColor('#FFFFFF'))
+                p.drawText(br, QtCore.Qt.AlignCenter, '경보')
+                name_w -= bw + SP2
+            p.setPen(QtGui.QColor(TXT if eq else FAINT))
+            p.setFont(f(F_BODY, eq))
+            nm = p.fontMetrics().elidedText(f'{z}  {ZONE_KO.get(z, "")}',
+                                            QtCore.Qt.ElideRight, int(name_w))
+            p.drawText(QtCore.QRectF(x + pad, 6, name_w, 24),
+                       QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, nm)
+            p.setFont(f(F_CAP))
+            base = QtCore.QRectF(x + pad, H - 30, zw - pad * 2, 22)
+            if not eq:
+                p.setPen(QtGui.QColor(FAINT))
+                p.drawText(base, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
+                           '장비 미설치')
+                continue
+            status = ('설비 회로 차단됨' if s['off'] else
+                      '전원 미검출 (0 V)' if s['power'] == 'missing' else
+                      '전원 계측 미확인' if s['power'] == 'unknown' else
+                      '설비 회로 정상')
+            p.setPen(QtGui.QColor(RED if s['off'] else
+                                  GREEN if s['power'] == 'ok' else AMBER))
+            p.drawText(base, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
+                       status)
+        p.end()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 3-B. 시설 평면도 — 평상시 메인 화면
+# ══════════════════════════════════════════════════════════════════════
+class FacilityPlan(QtWidgets.QWidget):
+    """facility.py 의 좌표만 보고 그린다. 이 클래스에 치수가 하나도 없다.
+
+    ⚠ 그것이 "실사용 시 시설 도면으로 교체한다" 를 말이 아니라 사실로 만든다.
+      facility.py 만 바꾸면 이 화면이 그 현장이 된다.
+
+    ═══ 색이 말하는 것 ═══
+      초록 감시 중        · 레이더가 살아 있고 이상 없음
+      주황 사전경보       · 정지형 카운트다운 중 (경보 아님. 점멸·소리 없음)
+      빨강 경보(점멸)      · 확정 사고
+      회색 점선 장비 미설치 · 레이더가 없는 구역. 감시한다고 말하지 않는다.
+      회색 실선 연결 대기   · 레이더는 있는데 링크가 없음
+    """
+    zone_clicked = QtCore.pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(360)
+        self.setCursor(QtCore.Qt.ArrowCursor)
+        self.setMouseTracking(True)
+        self.state = {z: {'sev': None, 'live': False, 'pre': None, 'et': None}
+                      for z in fac.ZONES}
+        self.worker = None            # (zone, plan_x, plan_y)
+        self.blink = False
+        self._hot = None              # 마우스가 올라간 구역
+        self._rects = {}              # 화면 좌표 캐시 (클릭 판정용)
+
+    # ── 상태 갱신 ────────────────────────────────────────────────────
+    def set_zone(self, zone, live=False, sev=None, pre=None, et=None):
+        if zone in self.state:
+            self.state[zone] = {'live': live, 'sev': sev, 'pre': pre, 'et': et}
+
+    def set_worker(self, zone, cx, cz):
+        p = fac.to_plan(zone, cx, cz)
+        self.worker = None if p is None else (zone, p[0], p[1])
+
+    def set_blink(self, on):
+        if on != self.blink:
+            self.blink = on
+            self.update()
+
+    # ── 좌표 변환 ────────────────────────────────────────────────────
+    def _fit(self):
+        W, H = fac.SIZE
+        pad = SP2
+        sx = (self.width() - pad * 2) / W
+        sy = (self.height() - pad * 2 - 18) / H     # 하단 캡션 자리
+        s = max(min(sx, sy), 1.0)
+        ox = (self.width() - W * s) / 2
+        oy = (self.height() - 18 - H * s) / 2
+        return s, ox, oy
+
+    def _pt(self, x, y, f):
+        s, ox, oy = f
+        return QtCore.QPointF(ox + x * s, oy + y * s)
+
+    def _rect(self, r, f):
+        s, ox, oy = f
+        return QtCore.QRectF(ox + r[0] * s, oy + r[1] * s, r[2] * s, r[3] * s)
+
+    # ── 입력 ─────────────────────────────────────────────────────────
+    def _zone_at(self, pos):
+        for z, r in self._rects.items():
+            if r.contains(pos) and self.state.get(z, {}).get('live'):
+                return z
+        return None
+
+    def mouseMoveEvent(self, e):
+        z = self._zone_at(e.pos())
+        if z != self._hot:
+            self._hot = z
+            self.setCursor(QtCore.Qt.PointingHandCursor if z
+                           else QtCore.Qt.ArrowCursor)
+            self.update()
+
+    def leaveEvent(self, e):
+        self._hot = None
+        self.setCursor(QtCore.Qt.ArrowCursor)
+        self.update()
+
+    def mousePressEvent(self, e):
+        z = self._zone_at(e.pos())
+        if z and e.button() == QtCore.Qt.LeftButton:
+            self.zone_clicked.emit(z)
+
+    # ── 렌더 ─────────────────────────────────────────────────────────
+    def paintEvent(self, _):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        f = self._fit()
+        self._rects = {}
+
+        # 바닥
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QBrush(QtGui.QColor(PANEL_LO)))
+        p.drawRect(self._rect((0, 0) + tuple(fac.SIZE), f))
+
+        # 설비 윤곽 (도면 밀도용 — 판정과 무관하므로 가장 낮은 대비)
+        p.setPen(QtGui.QPen(QtGui.QColor(GRID), 1))
+        p.setBrush(QtCore.Qt.NoBrush)
+        for item in fac.EQUIPMENT:
+            if not isinstance(item[0], str):
+                p.drawRect(self._rect(item, f))
+                continue
+            kind, *v = item
+            if kind == 'pipe':
+                p.drawLine(self._pt(v[0], v[1], f), self._pt(v[2], v[3], f))
+            elif kind == 'tank':
+                c = self._pt(v[0], v[1], f)
+                radius = v[2] * f[0]
+                p.drawEllipse(c, radius, radius)
+            else:
+                p.drawRect(self._rect(v[:4], f))
+
+        # 구역
+        for z, d in fac.ZONES.items():
+            st = self.state.get(z, {})
+            rect = self._rect(d['rect'], f)
+            self._rects[z] = rect.toRect()
+            sev, live, pre = st.get('sev'), st.get('live'), st.get('pre')
+            if sev in ('critical', 'warning'):
+                col = sev_color(sev)
+                on = (sev != 'critical') or self.blink
+                p.setPen(QtGui.QPen(QtGui.QColor(col), 2.5 if on else 1.5))
+                p.setBrush(QtGui.QBrush(QtGui.QColor(
+                    SEV_BG_HI.get(sev) if on else SEV_BG.get(sev))))
+            elif pre:
+                p.setPen(QtGui.QPen(QtGui.QColor(AMBER), 2,
+                                    QtCore.Qt.DashLine))
+                p.setBrush(QtGui.QBrush(QtGui.QColor(BG_WARN)))
+            elif live:
+                p.setPen(QtGui.QPen(QtGui.QColor(GREEN), 1.6))
+                p.setBrush(QtGui.QBrush(QtGui.QColor(BG_OK)))
+            elif not zone_equipped(z):
+                p.setPen(QtGui.QPen(QtGui.QColor(EDGE), 1.2,
+                                    QtCore.Qt.DashLine))
+                p.setBrush(QtGui.QBrush(QtGui.QColor(PANEL_LO)))
+            else:
+                p.setPen(QtGui.QPen(QtGui.QColor(FAINT), 1.4))
+                p.setBrush(QtGui.QBrush(QtGui.QColor(PANEL)))
+            p.drawRect(rect)
+            if z == self._hot:
+                p.setPen(QtGui.QPen(QtGui.QColor(CYAN), 2))
+                p.setBrush(QtCore.Qt.NoBrush)
+                p.drawRect(rect.adjusted(2, 2, -2, -2))
+
+        # 감지영역 — 실측 DANGER_ZONES 스케일. 여기만 '진짜 치수' 다.
+        for z in fac.RADARS:
+            cov = fac.coverage(z)
+            if not cov:
+                continue
+            st = self.state.get(z, {})
+            col = (sev_color(st['sev']) if st.get('sev') else
+                   (AMBER if st.get('pre') else
+                    (CYAN if st.get('live') else FAINT)))
+            c = QtGui.QColor(col)
+            p.setPen(QtGui.QPen(c, 1.4, QtCore.Qt.DashLine))
+            c.setAlpha(28)
+            p.setBrush(QtGui.QBrush(c))
+            p.drawRect(self._rect(cov, f))
+
+        # 벽 (가장 위에 — 도면의 골격)
+        p.setPen(QtGui.QPen(QtGui.QColor(EDGE), 2))
+        for x1, y1, x2, y2 in fac.WALLS:
+            p.drawLine(self._pt(x1, y1, f), self._pt(x2, y2, f))
+
+        self._draw_evac(p, f)
+        self._draw_radars(p, f)
+        self._draw_labels(p, f)
+        self._draw_worker(p, f)
+
+        p.end()
+
+    def _draw_evac(self, p, f):
+        p.setBrush(QtCore.Qt.NoBrush)
+        p.setPen(QtGui.QPen(QtGui.QColor(GREEN), 1.4, QtCore.Qt.DashLine))
+        for route in fac.EVAC_ROUTES:
+            for i in range(len(route) - 1):
+                p.drawLine(self._pt(*route[i], f), self._pt(*route[i + 1], f))
+        p.setFont(f_(F_CAP, True))
+        ew = p.fontMetrics().width('비상구') + 12
+        for x, y, _d in fac.EXITS:
+            c = self._pt(x, y, f)
+            box = QtCore.QRectF(c.x() - ew / 2, c.y() - 9, ew, 18)
+            p.setPen(QtGui.QPen(QtGui.QColor(GREEN), 1.6))
+            p.setBrush(QtGui.QBrush(QtGui.QColor(BG_OK)))
+            p.drawRoundedRect(box, 3, 3)
+            p.setPen(QtGui.QColor(GREEN))
+            p.drawText(box, QtCore.Qt.AlignCenter, '비상구')
+
+    def _draw_radars(self, p, f):
+        for z, r in fac.RADARS.items():
+            st = self.state.get(z, {})
+            col = (sev_color(st['sev']) if st.get('sev') else
+                   (AMBER if st.get('pre') else
+                    (CYAN if st.get('live') else FAINT)))
+            c = self._pt(r['pos'][0], r['pos'][1], f)
+            p.setPen(QtGui.QPen(QtGui.QColor(col), 1.6))
+            p.setBrush(QtGui.QBrush(QtGui.QColor(BG)))
+            p.drawEllipse(c, 7, 7)
+            p.setBrush(QtGui.QBrush(QtGui.QColor(col)))
+            p.drawEllipse(c, 2.5, 2.5)
+
+    def _draw_labels(self, p, f):
+        for z, d in fac.ZONES.items():
+            st = self.state.get(z, {})
+            rect = self._rect(d['rect'], f)
+            sev, pre, live = st.get('sev'), st.get('pre'), st.get('live')
+            if sev:
+                col, txt = sev_color(sev), EVENT_KO.get(st.get('et'), '경보')
+            elif pre:
+                col, txt = AMBER, pre
+            elif live:
+                col, txt = GREEN, '감시 중'
+            elif not zone_equipped(z):
+                col, txt = FAINT, '장비 미설치'
+            else:
+                col, txt = FAINT, '연결 대기'
+            # ⚠ 두 줄을 폰트 높이로 띄운다. 고정 오프셋을 쓰면 폰트가 바뀔 때
+            #   이름 위에 상태가 포개진다(실측).
+            p.setFont(f_(F_H2, True))
+            fm1 = p.fontMetrics()
+            w_avail = int(rect.width() - SP3 * 2)
+            y0 = rect.top() + SP2
+            p.setPen(QtGui.QColor(TXT if (live or sev) else FAINT))
+            p.drawText(QtCore.QRectF(rect.left() + SP3, y0, w_avail,
+                                     fm1.height()),
+                       QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
+                       fm1.elidedText(f"{z}  {d['name']}",
+                                      QtCore.Qt.ElideRight, w_avail))
+            p.setFont(f_(F_CAP, bool(sev or pre)))
+            fm2 = p.fontMetrics()
+            p.setPen(QtGui.QColor(col))
+            p.drawText(QtCore.QRectF(rect.left() + SP3, y0 + fm1.height() + 2,
+                                     w_avail, fm2.height()),
+                       QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
+                       fm2.elidedText(txt, QtCore.Qt.ElideRight, w_avail))
+
+    def _draw_worker(self, p, f):
+        if not self.worker:
+            return
+        z, x, y = self.worker
+        st = self.state.get(z, {})
+        col = QtGui.QColor(sev_color(st['sev']) if st.get('sev') else
+                           (AMBER if st.get('pre') else CYAN))
+        c = self._pt(x, y, f)
+        halo = QtGui.QColor(col)
+        halo.setAlpha(60)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QBrush(halo))
+        p.drawEllipse(c, 11, 11)
+        p.setBrush(QtGui.QBrush(col))
+        p.setPen(QtGui.QPen(QtGui.QColor(BG), 1.5))
+        p.drawEllipse(c, 5, 5)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 4. 이벤트 타임라인 (하단 접이식)
+# ══════════════════════════════════════════════════════════════════════
+class Timeline(QtWidgets.QFrame):
+    """v1 의 '최근 기록'. 접을 수 있고, 젯슨 원문과 앱 문장을 구분해 보여준다."""
+    ROWS = 4
+
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet(f'QFrame{{background:{PANEL};border:none;'
+                           f'border-radius:{RADIUS}px;}}')
+        v = vbox(self, SP3, SP2)
+        head = hbox(s=SP2)
+        self.toggle = QtWidgets.QToolButton()
+        self.toggle.setArrowType(QtCore.Qt.DownArrow)
+        self.toggle.setStyleSheet('QToolButton{border:none;background:transparent;}')
+        self.toggle.setCursor(QtCore.Qt.PointingHandCursor)
+        self.toggle.clicked.connect(self._flip)
+        head.addWidget(self.toggle)
+        head.addWidget(eyebrow('이벤트 타임라인'))
+        head.addStretch()
+        self.count = lb('', F_CAP, FAINT)
+        head.addWidget(self.count)
+        v.addLayout(head)
+        self.body = QtWidgets.QWidget()
+        bv = QtWidgets.QVBoxLayout(self.body)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(3)
+        self.rows = []
+        for _ in range(self.ROWS):
+            r = hbox(s=SP2)
+            ts = lb('', F_CAP, FAINT)
+            ts.setFixedWidth(64)
+            tag = lb('', F_CAP, FAINT)
+            tag.setFixedWidth(34)
+            msg = lb('', F_CAP, DIM, wrap=True)   # 복합 경보 문장 줄바꿈
+            r.addWidget(ts, 0, QtCore.Qt.AlignTop)
+            r.addWidget(tag, 0, QtCore.Qt.AlignTop)
+            r.addWidget(msg, 1)
+            bv.addLayout(r)
+            self.rows.append((ts, tag, msg))
+        v.addWidget(self.body)
+        self.buf = deque(maxlen=self.ROWS)
+        self.total = 0
+        # 중복 방지 키. ⚠ v1 은 set 이라 무한히 커졌다 — 젯슨 로그 문자열이
+        #   전부 쌓이므로 하루 종일 켜 두면 계속 자란다. 최근 것만 기억한다
+        #   (같은 로그가 400줄 뒤에 다시 오면 그건 실제로 다시 일어난 사건이다).
+        self._seen = set()
+        self._seen_q = deque(maxlen=400)
+
+    def _flip(self):
+        vis = not self.body.isVisible()
+        self.body.setVisible(vis)
+        self.toggle.setArrowType(QtCore.Qt.DownArrow if vis else QtCore.Qt.RightArrow)
+
+    def add(self, text, color=DIM, key=None, src='앱'):
+        """src='젯슨' 은 장비가 보낸 원문. 지우지 않되 태그로 구분한다."""
+        if key is not None:
+            if key in self._seen:
+                return
+            if len(self._seen_q) == self._seen_q.maxlen:
+                self._seen.discard(self._seen_q[0])
+            self._seen_q.append(key)
+            self._seen.add(key)
+        self.total += 1
+        self.buf.appendleft((time.strftime('%H:%M:%S'), src, text, color))
+        for i, (ts, tag, msg) in enumerate(self.rows):
+            if i < len(self.buf):
+                t, s, m, c = self.buf[i]
+                ts.setText(t)
+                tag.setText(s)
+                tag.setStyleSheet(f'color:{FAINT if s == "젯슨" else DIM};'
+                                  f'border:none;background:transparent;')
+                msg.setText(m)
+                msg.setStyleSheet(f'color:{c};border:none;background:transparent;')
+            else:
+                ts.setText('')
+                tag.setText('')
+                msg.setText('')
+        self.count.setText(f'{self.total}건')
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. 조치 가이드 · 판단 근거  (드로어 내용 — 별도 창이 아니다)
+# ══════════════════════════════════════════════════════════════════════
+class SopView(QtWidgets.QWidget):
+    """즉시조치 → 공식 매뉴얼 → 실측 브리핑 → AI 생성 SOP 순.
+
+    ⚠ 순서가 곧 권위 순서다. v1 은 AI 요약이 매뉴얼과 같은 위계로 붙어 있었고,
+      실제로 SOP('환자를 움직이지 마십시오')와 AI 문장('움직여야 합니다')이
+      한 화면에서 충돌했다. AI 생성문은 맨 아래 참고용으로만 두고, 그보다
+      먼저 즉시조치·공식 원문·젯슨 실측값을 결정적으로 표시한다.
+    """
+
+    def __init__(self):
+        super().__init__()
+        v = vbox(self, 0, SP3)
+        self.head = lb('', F_H1, DIM, bold=True, wrap=True)   # 복합 경보 이름 줄바꿈
+        v.addWidget(self.head)
+        self.done_box = card(BG_OK, GREEN, RADIUS_SM)
+        dv = vbox(self.done_box, SP3, 0)
+        self.done = lb('', F_BODY, GREEN, bold=True, wrap=True)
+        dv.addWidget(self.done)
+        v.addWidget(self.done_box)
+        v.addWidget(lb('즉시 조치 · 확정 절차', F_LABEL, TXT, bold=True))
+        self.body = QtWidgets.QTextEdit()
+        self.body.setReadOnly(True)
+        self.body.setFont(f(F_BODY))
+        self.body.setStyleSheet(TEXT_QSS)
+        v.addWidget(self.body, 2)
+        self.stat = lb('', F_CAP, DIM, wrap=True)
+        v.addWidget(self.stat)
+        v.addWidget(lb('공식 안전 매뉴얼 · 실측 브리핑', F_LABEL, DIM))
+        self.src = QtWidgets.QTextEdit()
+        self.src.setReadOnly(True)
+        self.src.setFont(f(F_LABEL))
+        self.src.setStyleSheet(TEXT_QSS)
+        v.addWidget(self.src, 3)
+        self._et = 'fall_detected'
+
+    def show_for(self, et='fall_detected', done=None, title=None, sev=None):
+        self._et = et
+        self.head.setText(title or EVENT_KO.get(et, str(et)))
+        self.head.setStyleSheet(
+            f'color:{sev_color(sev or event_sev(et))};border:none;background:transparent;')
+        default_done = ('경보 전파 완료 · 설비 회로 자동 차단 대상 아님'
+                        if et not in AUTO_TRIP_EVENTS else
+                        '작업 대상 설비 회로 차단 완료 · 젯슨 자동 실행')
+        self.done.setText(done or default_done)
+        html = []
+        # ⚠ [8/25] 폴백이 INSTANT_ACTION['fall_detected'] 였다. 등록되지 않은
+        #   이벤트에 낙상 응급처치가 떴다 — 과전류 경보에 "환자를 움직이지
+        #   마십시오" 가 나오던 원인이다. 중립 문구로 떨어뜨린다.
+        for cat, lines in INSTANT_ACTION.get(et, INSTANT_ACTION_UNKNOWN):
+            html.append(f'<p style="color:{CYAN};margin:2px 0 4px">'
+                        f'<b>[{cat}]</b></p>'
+                        f'<ul style="margin:0 0 10px 14px;color:{TXT}">')
+            html += [f'<li style="margin-bottom:4px">{t}</li>' for t in lines]
+            html.append('</ul>')
+        self.body.setHtml(''.join(html))
+        self.src.setHtml(f'<p style="color:{DIM}">매뉴얼 검색 중…</p>')
+
+    def set_status(self, msg):
+        self.stat.setText(msg)
+
+    def set_sources(self, et, srcs, ai):
+        if et != self._et:
+            return
+        h = []
+        for item in srcs:
+            if len(item) == 3:
+                # [10/09 T-CC07b] 고정 원문 — (등급, 출처, 문장). 등급·출처는
+                #   alarm_pinned_sentences.json 에 적힌 그대로 찍는다.
+                grade, title, t = item
+                col = AMBER if grade == '자체' else CYAN
+                h.append(f'<p style="color:{col};margin:0 0 2px">'
+                         f'<b>[{grade}]</b> {title}</p>'
+                         f'<p style="color:{DIM};margin:0 0 12px">{t}</p>')
+                continue
+            n, t = item
+            # [8/25] 파일명을 그대로 찍지 않는다. 공식 지침과 프로젝트 자체 SOP 가
+            #   나란히 뜨면 둘 다 같은 "매뉴얼" 로 보인다 → 등급을 먼저 밝힌다.
+            #   자체 작성은 근거 조항을 함께 적어 근거 없는 문서가 아님을 보인다.
+            kind, title, basis = core.source_label(n)
+            col = CYAN if kind == core.SRC_OFFICIAL else AMBER
+            h.append(f'<p style="color:{col};margin:0 0 2px">'
+                     f'<b>[{core.SRC_BADGE[kind]}]</b> {title}</p>')
+            if basis:
+                h.append(f'<p style="color:{FAINT};margin:0 0 3px">'
+                         f'근거: {basis}</p>')
+            h.append(f'<p style="color:{DIM};margin:0 0 12px">{t}</p>')
+        brief, sep, generated = ai.partition('\n---AI_SOP---\n')
+        if brief:
+            h.append(f'<p style="color:{AMBER};margin:8px 0 3px">'
+                     f'<b>실측 상황 브리핑</b></p>'
+                     f'<p style="color:{DIM};margin:0 0 10px">'
+                     f'{core.md_to_html(brief)}</p>')
+        if sep and generated:
+            h.append(f'<p style="color:{CYAN};margin:8px 0 3px">'
+                     f'<b>AI 보조 요약 · 공식 매뉴얼 기반</b></p>'
+                     f'<p style="color:{TXT};margin:0 0 10px">'
+                     f'{core.md_to_html(generated)}</p>')
+        if not h:
+            h.append(f'<p style="color:{DIM}">검색 결과 없음 — '
+                     f'위 [즉시 조치]를 따르십시오.</p>')
+        self.src.setHtml(''.join(h))
+
+
+class EvidenceView(QtWidgets.QWidget):
+    """L2 판단 근거 — 젯슨 classify() 가 보낸 수치만. LLM 은 이 화면에 개입하지 않는다."""
+
+    def __init__(self):
+        super().__init__()
+        v = vbox(self, 0, SP3)
+        self.head = lb('최근 경보 없음', F_BODY, DIM, wrap=True)
+        v.addWidget(self.head)
+        # ⚠ 드로어 폭(420px)에 4열은 안 들어간다 — '의미' 열이 가로 스크롤 밖으로
+        #   밀려 표에 스크롤바가 생겼다(실측). 의미는 항목 칸의 툴팁으로 옮긴다.
+        self.tbl = QtWidgets.QTableWidget(0, 3)
+        self.tbl.setHorizontalHeaderLabels(['항목', '측정값', '기준'])
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setFont(f(F_LABEL))
+        self.tbl.setStyleSheet(TABLE_QSS)
+        self.tbl.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.tbl.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.tbl.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        v.addWidget(self.tbl, 3)
+        self.why = lb('', F_CAP, DIM, wrap=True)
+        v.addWidget(self.why)
+        self.rej = lb('', F_CAP, DIM, wrap=True)
+        v.addWidget(self.rej)
+        v.addWidget(lb('원시 측정값', F_LABEL, DIM))
+        self.raw = QtWidgets.QTextEdit()
+        self.raw.setReadOnly(True)
+        self.raw.setFont(f(F_CAP))
+        self.raw.setStyleSheet(TEXT_QSS)
+        self.raw.setMaximumHeight(110)
+        v.addWidget(self.raw)
+
+    def set_event(self, ev, rx_ts):
+        et = ev.get('type') or ev.get('event_type')
+        sev = ev.get('sev') or event_sev(et)
+        self.head.setText(
+            f"{EVENT_KO.get(et, '-')} · {ev.get('zone')} "
+            f"{ZONE_KO.get(ev.get('zone'), '')} · {SEV_KO.get(sev, '')} · "
+            f"판정 점수 {ev.get('conf', 0):.2f} · "
+            f"{time.strftime('%H:%M:%S', time.localtime(rx_ts))}")
+        self.head.setStyleSheet(
+            f'color:{sev_color(sev)};border:none;background:transparent;')
+        g = ev.get('gates') or {}
+        self.tbl.setRowCount(max(len(g), 1))
+        if not g:
+            it = QtWidgets.QTableWidgetItem(
+                '판단 근거 없음 — 피처 계산 전 조기 판정 경로 (evidence=None)')
+            it.setForeground(QtGui.QColor(AMBER))
+            self.tbl.setItem(0, 0, it)
+            self.tbl.setSpan(0, 0, 1, 3)
+        whys = []
+        for r, (k, d) in enumerate(g.items()):
+            meta = GATE_META.get(k, {})
+            unit = d.get('unit', '')
+            cells = (meta.get('ko', k),
+                     f"{d.get('value')} {unit}".strip(),
+                     f"{d.get('cmp', '>=')} {d.get('thr')}  "
+                     f"{'통과' if d.get('pass') else '미달'}")
+            for c, t in enumerate(cells):
+                it = QtWidgets.QTableWidgetItem(str(t))
+                it.setForeground(QtGui.QColor(
+                    (GREEN if d.get('pass') else RED) if c == 2 else TXT))
+                if c == 0:
+                    tip = meta.get('why', '')
+                    if meta.get('src'):
+                        tip += f"\n실측 근거: {meta['src']}"
+                    if tip:
+                        it.setToolTip(tip.strip())
+                self.tbl.setItem(r, c, it)
+            if meta.get('why'):
+                whys.append(f"{meta.get('ko', k)} = {meta['why']}")
+        self.why.setText(' · '.join(whys))
+        self.tbl.resizeColumnsToContents()
+        rj = ev.get('rejected') or []
+        self.rej.setText(
+            '제외한 후보 · ' + ' · '.join(
+                f"{REJECT_KO.get(r.get('candidate'), r.get('candidate'))} "
+                f"({r.get('reason')})" for r in rj) if rj else '')
+        e = ev.get('evidence') or {}
+        self.raw.setPlainText(
+            '   '.join(f'{EVIDENCE_KO.get(k, k)}={v}' for k, v in e.items()
+                       if v is not None) or '(없음)')
+
+
+class ActionDrawer(QtWidgets.QFrame):
+    """우측 슬라이드 드로어.
+
+    ⚠ 이것이 v1 대비 가장 중요한 구조 변경이다. v1 의 조치 가이드는 독립
+      최상위 윈도우(QDialog)라서 본 창 밖으로 나갈 수 있었다 — 듀얼모니터에서
+      다른 화면에 뜨거나 본 창 뒤로 숨을 수 있었고, 경보 중에 창을 찾아 헤매게
+      된다. 드로어는 부모 레이아웃 안에 있으므로 그럴 수 없다.
+    """
+    WIDTH = 420
+    visibility_changed = QtCore.pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f'QFrame{{background:{PANEL};'
+                           f'border-left:1px solid {EDGE};border-radius:0px;}}')
+        self.setMaximumWidth(0)
+        v = vbox(self, SP4, SP3)
+        head = hbox(s=SP2)
+        self.title = lb('조치 가이드', F_H1, TXT, bold=True)
+        head.addWidget(self.title)
+        head.addStretch()
+        close = QtWidgets.QToolButton()
+        close.setText('✕')
+        close.setFont(f(F_BODY))
+        close.setCursor(QtCore.Qt.PointingHandCursor)
+        close.setStyleSheet(f'QToolButton{{border:none;background:transparent;'
+                            f'color:{DIM};}}QToolButton:hover{{color:{TXT};}}')
+        close.clicked.connect(self.close_drawer)
+        head.addWidget(close)
+        v.addLayout(head)
+
+        tabs = hbox(s=SP2)
+        self.tab_sop = button('조치 가이드', 'quiet', F_LABEL, 32)
+        self.tab_evi = button('판단 근거', 'quiet', F_LABEL, 32)
+        self.tab_sop.clicked.connect(lambda: self.open_at(0))
+        self.tab_evi.clicked.connect(lambda: self.open_at(1))
+        tabs.addWidget(self.tab_sop)
+        tabs.addWidget(self.tab_evi)
+        tabs.addStretch()
+        v.addLayout(tabs)
+
+        self.stack = QtWidgets.QStackedWidget()
+        self.sop = SopView()
+        self.evi = EvidenceView()
+        self.stack.addWidget(self.sop)
+        self.stack.addWidget(self.evi)
+        v.addWidget(self.stack, 1)
+
+        # 경보가 없을 때 '확인했습니다'가 떠 있으면 무엇을 확인하는지 알 수 없다.
+        #   활성 경보가 있을 때만 나타난다.
+        self.ack = button('확인했습니다', 'primary', F_BODY, 44)
+        self.ack.hide()
+        v.addWidget(self.ack)
+
+        self._open = False
+        self._extra_width = 0
+
+    def set_extra_width(self, width):
+        self._extra_width = max(0, int(width))
+
+    def open_at(self, idx):
+        self.stack.setCurrentIndex(idx)
+        self.title.setText('조치 가이드' if idx == 0 else '판단 근거')
+        for i, b in enumerate((self.tab_sop, self.tab_evi)):
+            b.setStyleSheet(b.styleSheet())
+            b.setFont(f(F_LABEL, bold=(i == idx)))
+        if not self._open:
+            self._animate(True)
+
+    def close_drawer(self):
+        self._animate(False)
+
+    def toggle(self, idx=0):
+        if self._open and self.stack.currentIndex() == idx:
+            self.close_drawer()
+        else:
+            self.open_at(idx)
+
+    def is_open(self):
+        return self._open
+
+    def _animate(self, opening):
+        self._open = opening
+        self.visibility_changed.emit(opening)
+        # 3D OpenGL 화면과 폭 애니메이션을 함께 돌리면 매 프레임 전체 레이아웃을
+        # 다시 계산해 170ms 설정보다 훨씬 느리게 보인다. 안전 조치는 즉시 연다.
+        self.setMaximumWidth(self.WIDTH + self._extra_width if opening else 0)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 6. 대시보드 (개요)
+# ══════════════════════════════════════════════════════════════════════
+
+
+class DashboardPage(QtWidgets.QWidget):
+    """[1] 대시보드 — 장비 상태와 시설 현황. 여기서 구역을 골라 감시로 들어간다."""
+    enter_zone = QtCore.pyqtSignal(dict)
+    open_settings = QtCore.pyqtSignal()
+
+    def __init__(self, link=None, demo=False):
+        super().__init__()
+        self.link, self.demo = link, demo
+        self._ai_status = (False, '대기',
+                           '감시 시작 후 6종 SOP 준비' if ALARM_SCREEN_LLM
+                           else '챗봇 워밍업 전', AMBER)
+        self._pkt = {}
+        self._link_ok = bool(demo)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        inner = QtWidgets.QWidget()
+        v = vbox(inner, SP5, SP4)
+        outer.addWidget(scrollable(inner))
+
+        # ── 제목 줄 ──
+        head = hbox(s=SP3)
+        tcol = QtWidgets.QVBoxLayout()
+        tcol.setSpacing(0)
+        tcol.addWidget(lb('대시보드', F_DISPLAY, TXT, bold=True))
+        tcol.addWidget(lb('산업 현장 안전 관제 시스템', F_BODY, DIM))
+        head.addLayout(tcol)
+        head.addStretch()
+        self.alarm_chip = lb('', F_LABEL, FAINT)
+        self.alarm_chip.setAlignment(QtCore.Qt.AlignCenter)
+        self.alarm_chip.setMinimumWidth(96)
+        self.alarm_chip.setMinimumHeight(30)
+        head.addWidget(self.alarm_chip)
+        self.clock = lb('', F_H2, TXT, bold=True)
+        self.clock.setAlignment(QtCore.Qt.AlignCenter)
+        self.clock.setMinimumWidth(104)
+        self.clock.setMinimumHeight(30)
+        self.clock.setStyleSheet(f'color:{TXT};background:{PANEL};'
+                                 f'border:1px solid {EDGE};'
+                                 f'border-radius:{RADIUS_SM}px;')
+        head.addWidget(self.clock)
+        v.addLayout(head)
+
+        # ── 장비 상태 카드 5장 ──
+        srow = hbox(s=SP3)
+        self.cards = {}
+        for k, name in (('radar', '레이더 상태'), ('engine', '판정 엔진'),
+                        ('breaker', '스마트 차단기'), ('sop', 'SOP 데이터베이스'),
+                        ('llm', 'AI 엔진')):
+            c = StatusCard(name)
+            self.cards[k] = c
+            srow.addWidget(c)
+        v.addLayout(srow)
+
+        # ── 시설 현황 (평면도) ──
+        #   ⚠ 카드 3장 → 평면도 하나로 바꿨다. 카드는 '구역이 3개 있다' 만
+        #     말했지 그것들이 어디에 있는지, 사고가 어느 쪽에서 났는지는
+        #     말하지 못했다. 관제에서 첫 질문은 언제나 '어디' 다.
+        head2 = hbox(s=SP3)
+        head2.addWidget(lb('시설 현황', F_H1, TXT, bold=True))
+        head2.addWidget(lb('구역을 누르면 실시간 감시 화면으로 들어갑니다',
+                           F_CAP, FAINT))
+        head2.addStretch()
+        for mark, color, text in (('■', GREEN, '감시 중'),
+                                  ('■', AMBER, '사전경보'),
+                                  ('■', RED, '경보'),
+                                  ('□', FAINT, '장비 미설치')):
+            head2.addWidget(lb(mark, F_CAP, color))
+            head2.addWidget(lb(text, F_CAP, FAINT))
+        v.addLayout(head2)
+
+        prow = hbox(s=SP3)
+        pbox = card()
+        pv = vbox(pbox, SP3, SP2)
+        self.plan = FacilityPlan()
+        self.plan.zone_clicked.connect(self._enter)
+        pv.addWidget(self.plan, 1)
+        prow.addWidget(pbox, 1)
+
+        # 평면도 옆 요약 — 레이더가 있는 구역의 실시간 값
+        sbox = card()
+        sv2 = vbox(sbox, SP4, SP2)
+        sbox.setFixedWidth(268)
+        sv2.addWidget(eyebrow(f'{RADAR_ZONE} {ZONE_KO.get(RADAR_ZONE, "")}'
+                              f' · 실시간'))
+        self.side_metrics = {}
+        for k, name, unit in (('height', '높이', 'm'), ('dop', '움직임', ''),
+                              ('pts', '포인트', '개'), ('ae', '이상도', '배')):
+            row = hbox(s=SP2)
+            row.addWidget(lb(name, F_CAP, DIM))
+            row.addStretch()
+            val = lb('—', F_H2, TXT, bold=True)
+            self.side_metrics[k] = val
+            row.addWidget(val)
+            row.addWidget(lb(unit, F_CAP, FAINT))
+            sv2.addLayout(row)
+        sv2.addSpacing(SP2)
+        sv2.addWidget(eyebrow('최근 이벤트'))
+        self.side_events = [lb('', F_CAP, FAINT, wrap=True) for _ in range(4)]
+        for r in self.side_events:
+            sv2.addWidget(r)
+        sv2.addStretch()
+        self.plan_hint = lb('', F_CAP, FAINT, wrap=True)
+        sv2.addWidget(self.plan_hint)
+        prow.addWidget(sbox)
+        v.addLayout(prow, 1)
+
+        # ── 근무 정보 ──
+        wbox = card()
+        wv = hbox(wbox, SP4, SP3)
+        wv.addWidget(lb('근무 정보', F_LABEL, DIM))
+        self.shift = styled_combo(['주간조', '야간조', '휴일조'])
+        self.shift.setFixedWidth(150)
+        self.operator = styled_line('담당자 이름')
+        self.who_state = lb('담당자 미지정', F_CAP, AMBER)
+        self.operator.textChanged.connect(self._who_changed)
+        wv.addWidget(self.shift)
+        wv.addWidget(self.operator, 1)
+        wv.addWidget(self.who_state)
+        gear = button('⚙  설정', 'ghost', F_BODY, 34, 104)
+        gear.clicked.connect(self.open_settings.emit)
+        wv.addWidget(gear)
+        v.addWidget(wbox)
+
+        self.why = lb('', F_BODY, AMBER, wrap=True)
+        v.addWidget(self.why)
+        v.addStretch()
+
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(700)
+        self.refresh()
+
+    def _who_changed(self, t):
+        ok = bool(t.strip())
+        self.who_state.setText('적용됨' if ok else '담당자 미지정')
+        self.who_state.setStyleSheet(f'color:{GREEN if ok else AMBER};'
+                                     f'border:none;background:transparent;')
+
+    def _enter(self, zid):
+        self.enter_zone.emit({'zone': zid,
+                              'shift': self.shift.currentText(),
+                              'operator': self.operator.text().strip() or '미지정'})
+
+    def on_packet(self, pkt):
+        self._pkt = pkt
+
+    def push(self, pkt, sev='normal'):
+        # ⚠ 구역 색을 refresh(700ms) 에만 맡기면 경보가 떠도 맵이 최대 0.7초
+        #   늦게 붉어진다. 1.5초 뒤 자동 전환이라 그 지연이 그대로 보인다.
+        #   → 구역 상태는 패킷마다(10 Hz) 갱신하고, refresh 는 장비 카드만 맡는다.
+        self.update_zones(pkt)
+        c = pkt.get('centroid') or {}
+        self.plan.set_worker(RADAR_ZONE, c.get('cx', 0.0), c.get('cz', 0.0))
+        ev = (pkt.get('ev') or {}).get('evidence') or {}
+        sc, th = pkt.get('_sc', 0.0), pkt.get('threshold', 0.0)
+        ratio = ((ev.get('ae_score', sc) or 0) /
+                 max(ev.get('ae_thr', th) or 1e-9, 1e-9)) if (ev or th) else 0
+        col = sev_color(sev) if sev != 'normal' else TXT
+        for k, t in (('height', f"{pkt.get('height') or 0:.2f}"),
+                     ('dop', f"{pkt.get('dop_std', 0):.2f}"),
+                     ('pts', f"{pkt.get('n_pts', 0)}"),
+                     ('ae', f'{ratio:.1f}' if ratio else '—')):
+            self.side_metrics[k].setText(t)
+            self.side_metrics[k].setStyleSheet(
+                f'color:{col};border:none;background:transparent;')
+        self.plan.update()
+
+    def set_events(self, lines):
+        for i, r in enumerate(self.side_events):
+            if i < len(lines):
+                ts, txt, c = lines[i]
+                r.setText(f'{ts}  {txt}')
+                r.setStyleSheet(f'color:{c};border:none;background:transparent;')
+            else:
+                r.setText('')
+
+    def set_blink(self, on):
+        self.plan.set_blink(on)
+
+    def update_zones(self, pkt):
+        """평면도 구역 상태. 경보 > 사전경보 > 감시중 > 미설치 순으로 결정한다."""
+        ev = pkt.get('ev') or {}
+        live_ph = pkt.get('phase') == PH_LIVE
+        alarm_zone = ev.get('zone') if ev.get('active') else None
+        asev = (ev.get('sev') or event_sev(ev.get('type'))) if alarm_zone else None
+        pre = parse_pre_alert(pkt.get('pre_alert'))
+        for z in fac.ZONES:
+            self.plan.set_zone(
+                z,
+                live=bool(self._link_ok and zone_equipped(z) and live_ph),
+                sev=asev if z == alarm_zone else None,
+                pre=(pre['text'] if (pre and pre['zone'] == z
+                                     and z != alarm_zone) else None),
+                et=ev.get('type') if z == alarm_zone else None)
+        self.plan.update()
+
+    def set_alarm_count(self, n_active, n_today, sev='critical'):
+        if n_active:
+            c = sev_color(sev)
+            self.alarm_chip.setText(f'경보 {n_active}건')
+            self.alarm_chip.setStyleSheet(
+                f'color:{c};background:{SEV_BG.get(sev, BG_ALERT)};'
+                f'border:1px solid {c};border-radius:{RADIUS_SM}px;')
+        else:
+            self.alarm_chip.setText(f'오늘 {n_today}건')
+            self.alarm_chip.setStyleSheet(
+                f'color:{DIM};background:{PANEL};border:1px solid {EDGE};'
+                f'border-radius:{RADIUS_SM}px;')
+
+    # ── 장비 상태 갱신 ──
+    #   ⚠ 여기 detail 에는 '근무자가 판단에 쓸 수 있는 것'만 쓴다.
+    #     IP·포트·모델명·접속문자열·임계값은 [설정] 의 AI·SOP / 판정 / 진단 탭에 있다.
+    def refresh(self):
+        pkt = self._pkt or {}
+        c = self.cards
+        self.clock.setText(time.strftime('%H:%M:%S'))
+
+        if self.demo:
+            c['radar'].set(True, '데모 모드', '가짜 데이터 · 젯슨 없음', AMBER)
+        elif self.link is None:
+            c['radar'].set(False, '미설정', '--live <젯슨IP> 로 실행하세요')
+        else:
+            age = self.link.age()
+            if age is None:
+                c['radar'].set(False, '연결 대기', '장비 응답을 기다리는 중')
+            elif age > LINK_TIMEOUT:
+                c['radar'].set(False, '끊김', f'마지막 수신 {int(age)}초 전', RED)
+            else:
+                c['radar'].set(True, '연결됨',
+                               f'지연 {int(age * 1000)}ms · 유실 {self.link.lost}건')
+
+        ph = pkt.get('phase')
+        if ph == PH_LIVE:
+            c['engine'].set(True, 'LIVE', '정상 기준 학습 완료')
+        elif ph:
+            c['engine'].set(False, PHASE_KO.get(ph, ph), '현장 준비 화면에서 진행')
+        else:
+            c['engine'].set(False, '대기', '판정 장비 응답 없음')
+
+        breaker = pkt.get('breaker') or {}
+        if breaker.get('src') == 'modbus' and breaker.get('connected'):
+            c['breaker'].set(True, '연결됨', 'Modbus 릴레이 응답 정상')
+        else:
+            c['breaker'].set(False, '미연결', 'Modbus 릴레이 응답 없음', AMBER)
+
+        c['sop'].set(RAG_OK, '정상' if RAG_OK else '비활성',
+                     '안전 매뉴얼 검색 사용 가능' if RAG_OK
+                     else '매뉴얼 검색 불가 — 즉시 조치만 표시')
+        c['llm'].set(*self._ai_status)
+
+        ok = c['radar'].ok
+        self._link_ok = ok
+        self.update_zones(pkt)
+        self.plan_hint.setText(
+            f"{RADAR_ZONE} 구역 감지영역 "
+            f"{2 * fac.COVER_HALF:.2f} × {2 * fac.COVER_HALF:.2f} m · "
+            f"천장 {fac.RADARS[RADAR_ZONE]['ceiling']:.2f} m"
+            if RADAR_ZONE in fac.RADARS else '')
+        self.why.setText('' if ok else
+                         '레이더 링크가 확인되면 구역을 선택할 수 있습니다 — '
+                         '젯슨에서 jetson_sender.py 가 실행 중인지 확인하세요')
+
+    def set_ai_status(self, ok, value, detail, color=None):
+        self._ai_status = (ok, value, detail, color)
+        self.cards['llm'].set(*self._ai_status)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. 실시간 감시
+# ══════════════════════════════════════════════════════════════════════
+class MonitorPage(QtWidgets.QWidget):
+    """[2] 실시간 감시 — 장면 + 상황 패널 + 타임라인 + 우측 드로어."""
+    ack = QtCore.pyqtSignal()
+    resolve = QtCore.pyqtSignal()
+    prepare = QtCore.pyqtSignal()
+    mode_changed = QtCore.pyqtSignal()   # 3D↔2D 전환 — ConsoleV2 가 즉시 재렌더
+    enter_confirmed = QtCore.pyqtSignal()
+    exit_confirmed = QtCore.pyqtSignal()
+
+    def __init__(self, has_prepare=True):
+        super().__init__()
+        root = QtWidgets.QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        main = QtWidgets.QWidget()
+        v = vbox(main, SP5, SP3)
+        root.addWidget(main, 1)
+        self.drawer = ActionDrawer(self)
+        root.addWidget(self.drawer)
+
+        # ── 제목 줄 ──
+        head = hbox(s=SP3)
+        tcol = QtWidgets.QVBoxLayout()
+        tcol.setSpacing(0)
+        tcol.addWidget(lb('실시간 감시', F_DISPLAY, TXT, bold=True))
+        self.sub = lb('', F_BODY, DIM)
+        tcol.addWidget(self.sub)
+        head.addLayout(tcol)
+        head.addStretch()
+        self.seg2d = button('2D 측면도', 'quiet', F_LABEL, 30, 92)
+        self.seg3d = button('3D', 'quiet', F_LABEL, 30, 56)
+        head.addWidget(self.seg2d)
+        head.addWidget(self.seg3d)
+        self.cam = button('시점 초기화', 'ghost', F_LABEL, 30, 96)
+        head.addWidget(self.cam)
+        self.link_lb = lb('연결 확인 중', F_LABEL, DIM)
+        head.addWidget(self.link_lb)
+        self.clock = lb('', F_LABEL, DIM)
+        head.addWidget(self.clock)
+        v.addLayout(head)
+
+        # 입·퇴실은 센서 추정이 아니라 운영자 확인값이다. 판정 버튼과 섞지 않는다.
+        occ = hbox(s=SP2)
+        occ.addWidget(eyebrow('작업자 재실'))
+        self.occupancy = lb('퇴실', F_LABEL, DIM, bold=True)
+        occ.addWidget(self.occupancy)
+        occ.addStretch()
+        self.enter_btn = button('입실 확인', 'primary', F_LABEL, 30, 96)
+        self.exit_btn = button('퇴실 확인', 'ghost', F_LABEL, 30, 96)
+        self.enter_btn.clicked.connect(self.enter_confirmed.emit)
+        self.exit_btn.clicked.connect(self.exit_confirmed.emit)
+        occ.addWidget(self.enter_btn)
+        occ.addWidget(self.exit_btn)
+        v.addLayout(occ)
+
+        # ── 경보 배너 ──
+        self.banner = QtWidgets.QFrame()
+        bh = hbox(self.banner, SP4, SP3)
+        # [10/19 T-CC07g] 복합 경보 이름이 길면 줄바꿈한다(말줄임·글꼴 축소 금지).
+        self.b_left = lb('', F_H1, RED, bold=True, wrap=True)
+        self.b_right = lb('', F_BODY, RED, bold=True)
+        bh.addWidget(self.b_left, 1)
+        bh.addWidget(self.b_right, 0, QtCore.Qt.AlignTop)
+        self.banner.hide()
+        v.addWidget(self.banner)
+
+        # ── 정지형 사전경보 줄 (경보 아님 — 점멸·소리 없음) ──
+        self.pre_bar = card(BG_WARN, AMBER)
+        ph_ = hbox(self.pre_bar, SP4, SP3)
+        ph_.addWidget(lb('◐', F_H2, AMBER))
+        self.pre_lb = lb('', F_BODY, AMBER, bold=True, wrap=True)
+        ph_.addWidget(self.pre_lb, 1)
+        self.pre_bar.hide()
+        v.addWidget(self.pre_bar)
+
+        # ── 기준 미학습 안내 ──
+        self.needcal = card(BG_WARN, AMBER)
+        nh = hbox(self.needcal, SP4, SP3)
+        self.needcal_lb = lb('', F_BODY, AMBER, wrap=True)
+        nh.addWidget(self.needcal_lb, 1)
+        self.cal_btn = button('빈방 스캔 실행', 'primary', F_BODY, 36, 148)
+        self.cal_btn.clicked.connect(self.prepare.emit)
+        nh.addWidget(self.cal_btn)
+        self.needcal.hide()
+        if not has_prepare:
+            self.cal_btn.setEnabled(False)
+        v.addWidget(self.needcal)
+
+        # ── 본문 ──
+        mid = hbox(s=SP3)
+        # ── 왼쪽: 장면 + 실시간 계측 ──
+        #   ⚠ 계측 타일은 원래 우측 열에 있었다. 경보가 뜨면 우측에 사고 패널이
+        #     들어오면서 계측 4개 중 2개와 구역 현황이 스크롤 아래로 밀려났다
+        #     (실측). 경보 순간에 가려지는 정보는 없어야 한다.
+        #     → 폭이 넉넉한 왼쪽 열 하단으로 옮겨 4칸을 한 줄에 편다.
+        leftw = QtWidgets.QWidget()
+        leftv = QtWidgets.QVBoxLayout(leftw)
+        leftv.setContentsMargins(0, 0, 0, 0)
+        leftv.setSpacing(SP3)
+        scene_box = card()
+        sv = vbox(scene_box, SP4, SP2)
+        head = hbox(s=SP3)
+        head.addWidget(eyebrow('현장 포인트 클라우드'))
+        head.addStretch()
+        # 범례 — 무엇이 실측이고 무엇이 도식인지 화면에서 구분되게 한다.
+        #   ⚠ 이 한 줄이 "관절도 측정한 거냐"는 질문을 원천 차단한다.
+        #   ⚠ 폭이 모자라면 통째로 접는다. 잘린 범례는 없는 것만 못하고,
+        #     같은 내용이 아래 캡션(pose label)에도 들어 있다.
+        self.legend = QtWidgets.QWidget()
+        lg = hbox(self.legend, s=SP2)
+        for mark, color, text in (('●', CYAN, '레이더 점군'),
+                                  ('●', AMBER, '위치 추정'),
+                                  ('─', GREEN, '자세 추정'),
+                                  ('▦', '#1E4C75', '설비 배치'),
+                                  ('□', '#F59E0B', '단자함 위험구역'),
+                                  ('□', '#A78BFA', '냉각팬 위험구역')):
+            lg.addWidget(lb(mark, F_CAP, color))
+            lg.addWidget(lb(text, F_CAP, FAINT))
+        self._legend_w = self.legend.sizeHint().width()
+        head.addWidget(self.legend)
+        sv.addLayout(head)
+        self._scene_box = scene_box
+        self.scene = SceneView()
+        # ⚠ 최소 높이는 '창이 가장 작을 때(1180×760) 경보 배너까지 떠 있어도
+        #   같은 열의 형제 위젯을 밀어내지 않는' 값이다. 210 으로 뒀더니 세로
+        #   합계가 창을 넘어 캡션이 장면 위에 겹쳐 그려졌다.
+        #   [10/19 T-CC07g 실측] 복합 경보(유형 3개)로 배너가 두 줄(99px)·타임라인이
+        #   두 줄(124→156px)이 되면 1280·1200×800 + 드로어에서 장면 칸이 15px 모자라
+        #   캡션과 겹쳤다 → 150 → 120. 공간이 남으면 늘어나므로 평소 크기는 같다.
+        self.scene.setMinimumHeight(120)
+        sv.addWidget(self.scene, 1)
+        # ⚠ 이 캡션은 wrap 을 쓰지 않는다. 두 줄이 되면 세로가 모자라 장면 위젯
+        #   위로 겹쳐 그려졌다(실측). 폭이 좁으면 줄이 늘어나는 대신 말줄임한다.
+        self.pose_lb = lb('감시 중', F_CAP, DIM)
+        self.pose_lb.setFixedHeight(16)
+        self._pose_text = '감시 중'
+        sv.addWidget(self.pose_lb)
+        leftv.addWidget(scene_box, 1)
+        mid.addWidget(leftw, 62)
+
+        # ⚠ 우측 열은 반드시 스크롤 가능해야 한다.
+        #   세로가 모자라면 Qt 는 최소크기까지 눌러 담고, 그래도 모자라면
+        #   위젯을 겹쳐 그린다. 실측 스크린샷에서 [조치 방법] 버튼이
+        #   [확인함/상황 종료] 위에 포개졌고 계측 타일 4개의 라벨과 숫자가
+        #   서로 겹쳤다. 경보 화면에서 숫자가 겹치는 건 '못 읽는 것'이 아니라
+        #   '잘못 읽는 것'이라 훨씬 위험하다.
+        rightw = QtWidgets.QWidget()
+        right = QtWidgets.QVBoxLayout(rightw)
+        right.setContentsMargins(0, 0, SP2, 0)
+        right.setSpacing(SP3)
+        rightw.setMinimumWidth(372)
+        right_sa = scrollable(rightw)
+        right_sa.setMinimumWidth(388)
+
+        # 평상시 히어로
+        self.hero = card()
+        self.hero.setMinimumHeight(150)
+        hv = vbox(self.hero, SP4, SP1)
+        self.h_ic = lb('✓', 26, GREEN, align=QtCore.Qt.AlignCenter)
+        self.h_t = lb('이상 없음', F_H1, TXT, bold=True, align=QtCore.Qt.AlignCenter)
+        self.h_quiet = lb('', F_BODY, GREEN, bold=True, align=QtCore.Qt.AlignCenter)
+        self.h_s = lb('', F_CAP, DIM, align=QtCore.Qt.AlignCenter, wrap=True)
+        for w in (self.h_ic, self.h_t, self.h_quiet, self.h_s):
+            hv.addWidget(w)
+        right.addWidget(self.hero)
+
+        # 경보 패널 — 시선 순서: ①사고 종류·위험도 ②경과·확신도 ③작업자 상태
+        #                        ④자동 차단 결과 ⑤지금 누를 버튼
+        self.alert_box = card(PANEL, RED)
+        self.alert_box.setMinimumHeight(292)
+        av = vbox(self.alert_box, SP4, SP3)
+        crow = hbox(s=SP2)
+        # ⚠ [10/19 T-CC07g 실측] 복합 경보 이름(유형 3개 690px)이 한 줄 라벨이라 우측 열
+        #   최소 폭이 839px 가 됐고, 스크롤 영역이 그 폭으로 높이를 계산해 노란 상자가
+        #   12px 눌려 위아래가 잘렸다. 이름은 줄바꿈하고 판정 점수는 위에 붙인다.
+        self.a_kind = lb('', F_H1, RED, bold=True, wrap=True)
+        crow.addWidget(self.a_kind, 1)
+        self.a_conf = lb('', F_BODY, TXT, bold=True)
+        crow.addWidget(self.a_conf, 0, QtCore.Qt.AlignTop)
+        av.addLayout(crow)
+        self.msg = lb('', F_BODY, TXT, wrap=True)
+        self.msg.setMinimumHeight(44)
+        av.addWidget(self.msg)
+        self.auto_box = card(BG_OK, GREEN, RADIUS_SM)
+        self.auto_box.setMinimumHeight(46)
+        auv = vbox(self.auto_box, SP3, 0)
+        self.auto_lb = lb('', F_LABEL, GREEN, bold=True, wrap=True)
+        auv.addWidget(self.auto_lb)
+        av.addWidget(self.auto_box)
+        self.a_sop = button('조치 방법 보기', 'danger', F_BODY, 46)
+        av.addWidget(self.a_sop)
+        row = hbox(s=SP2)
+        self.a_ack = button('확인함', 'quiet', F_BODY, 40)
+        self.a_end = button('상황 종료', 'ghost', F_BODY, 40)
+        self.a_ack.clicked.connect(self.ack.emit)
+        self.a_end.clicked.connect(self.resolve.emit)
+        row.addWidget(self.a_ack)
+        row.addWidget(self.a_end)
+        av.addLayout(row)
+        self.alert_box.hide()
+        right.addWidget(self.alert_box)
+
+        # 구역 현황
+        zbox = card()
+        zv = vbox(zbox, SP4, SP2)
+        zv.addWidget(eyebrow('구역 현황'))
+        self.zstrip = ZoneStrip()
+        zv.addWidget(self.zstrip)
+        right.addWidget(zbox)
+
+        # 감시 요약 — 평상시 우측 여백을 채우는 동시에, 그동안 화면 어디에도
+        #   없던 '마지막 데이터 수신 시각'을 둔다. 링크가 살아 있는지를
+        #   초록 점 하나가 아니라 숫자로 확인할 수 있어야 한다.
+        sbox = card()
+        svv = vbox(sbox, SP4, SP2)
+        svv.addWidget(eyebrow('감시 요약'))
+        self.summary = {}
+        grid = QtWidgets.QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(SP3)
+        grid.setVerticalSpacing(SP2)
+        for r, (k, name) in enumerate((('zone', '감시 구역'), ('who', '근무'),
+                                       ('rx', '마지막 수신'), ('today', '오늘 경보'))):
+            grid.addWidget(lb(name, F_CAP, DIM), r, 0)
+            val = lb('—', F_LABEL, TXT)
+            self.summary[k] = val
+            grid.addWidget(val, r, 1)
+        grid.setColumnStretch(1, 1)
+        svv.addLayout(grid)
+        right.addWidget(sbox)
+
+        right.addStretch()
+        mid.addWidget(right_sa, 38)
+
+        # 실시간 계측 — 왼쪽 열 하단, 한 줄 4칸
+        mbox = card()
+        mv = vbox(mbox, SP4, SP2)
+        mv.addWidget(eyebrow('실시간 계측'))
+        g = QtWidgets.QGridLayout()
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setSpacing(SP2)
+        self.tiles = {
+            # 캡션은 좁은 칸에서도 안 잘리는 길이만 쓴다 (자세한 설명은 [판단 근거]에)
+            'height': MetricTile('높이', 'm'),
+            'dop': MetricTile('움직임', '', 'dop_std'),
+            'pts': MetricTile('포인트', '개', '원시'),
+            'ae': MetricTile('이상도', '배'),
+        }
+        for i, k in enumerate(('height', 'dop', 'pts', 'ae')):
+            g.addWidget(self.tiles[k], 0, i)
+            g.setColumnStretch(i, 1)
+        mv.addLayout(g)
+        leftv.addWidget(mbox)
+        v.addLayout(mid, 1)
+
+        # ── 하단: 타임라인 + 보조 도구 ──
+        #   ⚠ 보조 버튼 4개는 원래 우측 열 맨 아래에 있었는데, 경보 패널이
+        #     들어오면 스크롤 밖으로 밀려 반쯤 잘린 채 보였다(실측).
+        #     항상 같은 자리에 있어야 하는 것은 스크롤 밖에 둔다.
+        bottom = hbox(s=SP3)
+        self.timeline = Timeline()
+        bottom.addWidget(self.timeline, 1)
+        tools = card()
+        tv = vbox(tools, SP3, SP2)
+        tv.addWidget(eyebrow('보조 도구'))
+        self.b_evi = button('판단 근거', 'ghost', F_LABEL, 30, 108)
+        self.b_pwr = button('전기 설비', 'ghost', F_LABEL, 30, 108)
+        self.b_graph = button('그래프', 'ghost', F_LABEL, 30, 108)
+        self.b_query = button('문의', 'ghost', F_LABEL, 30, 108)
+        tg = QtWidgets.QGridLayout()
+        tg.setContentsMargins(0, 0, 0, 0)
+        tg.setSpacing(SP2)
+        for i, b in enumerate((self.b_evi, self.b_pwr, self.b_graph, self.b_query)):
+            tg.addWidget(b, i // 2, i % 2)
+        tv.addLayout(tg)
+        bottom.addWidget(tools)
+        v.addLayout(bottom)
+
+        self.seg2d.clicked.connect(lambda: self._set_mode(SceneView.MODE_2D))
+        self.seg3d.clicked.connect(lambda: self._set_mode(SceneView.MODE_3D))
+        self.cam.clicked.connect(self.scene.reset_camera)
+        self.a_sop.clicked.connect(lambda: self.drawer.open_at(0))
+        self.b_evi.clicked.connect(lambda: self.drawer.toggle(1))
+        self.drawer.ack.clicked.connect(self._drawer_ack)
+        self._sync_seg()
+
+    def fit_pose_text(self):
+        """현재 폭에 맞춰 캡션을 다시 말줄임한다.
+
+        ⚠ fit_legend 와 같은 함정에 빠져 있었다 — 드로어가 열리면 형제 위젯의
+          maximumWidth 만 바뀌어 이 페이지의 resizeEvent 가 안 뜨는데 장면 폭은
+          420px 줄어든다. 그래서 경보로 드로어가 열리면 캡션이 드로어 열리기 전
+          폭 기준으로 잘린 채 남아 실제로는 삐져나갔다.
+          (8/25 레이아웃 검증 실측: 1366×900 '감시-경보' 에서 422 > 408px)
+          → resizeEvent 뿐 아니라 주기 갱신(tick_ui)에서도 부른다.
+        """
+        text = getattr(self, '_pose_text', None)
+        if not text:
+            return
+        fm = QtGui.QFontMetrics(self.pose_lb.font())
+        self.pose_lb.setText(fm.elidedText(
+            text, QtCore.Qt.ElideRight, max(self.pose_lb.width() - 4, 40)))
+
+    def set_pose_text(self, text, color):
+        """폭에 맞춰 말줄임. 줄바꿈으로 높이가 늘어나면 장면과 겹친다."""
+        self._pose_text = text
+        self.fit_pose_text()
+        self.pose_lb.setStyleSheet(
+            f'color:{color};border:none;background:transparent;')
+        self.pose_lb.setToolTip(text)
+
+    def fit_legend(self):
+        """범례가 통째로 들어갈 때만 보이게 한다.
+
+        ⚠ resizeEvent 만으로는 부족하다. 드로어가 열리면 형제 위젯의
+          maximumWidth 만 바뀌므로 이 페이지의 크기 이벤트가 안 뜨는데,
+          장면 폭은 420px 줄어든다(실측: 1366폭에서 범례가 잘림).
+          → 주기 갱신(tick_ui)에서도 같이 부른다.
+        """
+        lg = getattr(self, 'legend', None)
+        if lg is not None:
+            lg.setVisible(self._scene_box.width() > self._legend_w + 210)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.fit_legend()
+        self.fit_pose_text()
+
+    def _drawer_ack(self):
+        self.drawer.close_drawer()
+        self.ack.emit()
+
+    def _set_mode(self, mode):
+        if self.scene.set_mode(mode):
+            self._sync_seg()
+            self.mode_changed.emit()
+
+    def _sync_seg(self):
+        m = self.scene.mode()
+        for b, mine in ((self.seg2d, SceneView.MODE_2D),
+                        (self.seg3d, SceneView.MODE_3D)):
+            on = (m == mine)
+            b.setStyleSheet(
+                f'QPushButton{{background:{BG_SEL if on else PANEL_HI};'
+                f'color:{CYAN if on else DIM};border:none;'
+                f'border-radius:{RADIUS_SM}px;padding:4px 10px;}}'
+                f'QPushButton:hover{{color:{TXT};}}'
+                f'QPushButton:disabled{{color:{FAINT};background:{PANEL_LO};}}')
+        self.seg3d.setEnabled(self.scene.has_3d())
+        self.cam.setVisible(m == SceneView.MODE_3D)
+        if not self.scene.has_3d():
+            self.seg3d.setToolTip('OpenGL 미설치 — pip install pyopengl')
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. 이벤트 로그 · SOP 가이드 페이지
+# ══════════════════════════════════════════════════════════════════════
+class EventLogPage(QtWidgets.QWidget):
+    """[3] 이벤트 로그 — v1 의 EventLogPopup 과 동일 데이터·동일 CSV 형식."""
+
+    def __init__(self):
+        super().__init__()
+        v = vbox(self, SP5, SP4)
+        head = hbox(s=SP3)
+        tcol = QtWidgets.QVBoxLayout()
+        tcol.setSpacing(0)
+        tcol.addWidget(lb('이벤트 로그', F_DISPLAY, TXT, bold=True))
+        tcol.addWidget(lb('경보 이력 · 종료 처리 상태', F_BODY, DIM))
+        head.addLayout(tcol)
+        head.addStretch()
+        b = button('CSV 내보내기', 'ghost', F_BODY, 36, 150)
+        b.clicked.connect(self._export)
+        head.addWidget(b)
+        v.addLayout(head)
+        self.tbl = QtWidgets.QTableWidget(0, 5)
+        self.tbl.setHorizontalHeaderLabels(['시각', '종류', '구역', '확신도', '상태'])
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        self.tbl.horizontalHeader().setDefaultSectionSize(140)
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setFont(f(F_BODY))
+        self.tbl.setStyleSheet(TABLE_QSS)
+        self.tbl.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.tbl.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        v.addWidget(self.tbl, 1)
+        self.empty = lb('아직 기록된 경보가 없습니다.', F_BODY, FAINT)
+        v.addWidget(self.empty)
+        self.rows = []
+
+    def add(self, ts, et, zone, conf, status):
+        self.empty.hide()
+        r = self.tbl.rowCount()
+        self.tbl.insertRow(r)
+        cells = (ts, EVENT_KO.get(et, str(et)),
+                 f'{zone} {ZONE_KO.get(zone, "")}', f'{conf:.2f}', status)
+        self.rows.append(cells)
+        for c, t in enumerate(cells):
+            it = QtWidgets.QTableWidgetItem(t)
+            it.setForeground(QtGui.QColor(RED if c == 1 else TXT))
+            self.tbl.setItem(r, c, it)
+        self.tbl.scrollToBottom()
+
+    def mark_resolved(self, ts):
+        r = self.tbl.rowCount() - 1
+        if r >= 0:
+            it = QtWidgets.QTableWidgetItem(f'종료 {ts}')
+            it.setForeground(QtGui.QColor(GREEN))
+            self.tbl.setItem(r, 4, it)
+            self.rows[r] = self.rows[r][:4] + (f'종료 {ts}',)
+
+    def _export(self):
+        p, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, '경보 기록 저장',
+            f'radar_guard_alarms_{time.strftime("%Y%m%d_%H%M")}.csv', 'CSV (*.csv)')
+        if not p:
+            return
+        with open(p, 'w', encoding='utf-8-sig') as fp:
+            fp.write('시각,종류,구역,확신도,상태\n')
+            for r in self.rows:
+                fp.write(','.join(str(x).replace(',', ' ') for x in r) + '\n')
+
+
+class SopGuidePage(QtWidgets.QWidget):
+    """[4] SOP 가이드 — 경보가 나기 전에 미리 읽어 두는 화면.
+
+    ⚠ 경보 중 조치는 드로어에서 본다. 이 페이지는 '평소 학습용'이라
+      경보 상황과 성격이 다르므로 빨강을 쓰지 않는다.
+    """
+
+    def __init__(self):
+        super().__init__()
+        v = vbox(self, SP5, SP4)
+        tcol = QtWidgets.QVBoxLayout()
+        tcol.setSpacing(0)
+        tcol.addWidget(lb('SOP 가이드', F_DISPLAY, TXT, bold=True))
+        tcol.addWidget(lb('사고 유형별 즉시 조치 절차 — 경보 시 우측 패널에 '
+                          '자동으로 표시됩니다', F_BODY, DIM))
+        v.addLayout(tcol)
+        row = hbox(s=SP3)
+        self.list = QtWidgets.QListWidget()
+        self.list.setFixedWidth(220)
+        self.list.setFont(f(F_BODY))
+        self.list.setStyleSheet(
+            f'QListWidget{{background:{PANEL};color:{TXT};border:1px solid {EDGE};'
+            f'border-radius:{RADIUS_SM}px;padding:6px;outline:none;}}'
+            f'QListWidget::item{{padding:9px 8px;border-radius:{RADIUS_SM}px;}}'
+            f'QListWidget::item:selected{{background:{BG_SEL};color:{CYAN};}}')
+        for et in INSTANT_ACTION:
+            it = QtWidgets.QListWidgetItem(EVENT_KO.get(et, et))
+            it.setData(QtCore.Qt.UserRole, et)
+            self.list.addItem(it)
+        self.list.currentRowChanged.connect(self._pick)
+        self.list.setMaximumHeight(self.list.count() * 40 + 20)
+        lcol = QtWidgets.QVBoxLayout()
+        lcol.setContentsMargins(0, 0, 0, 0)
+        lcol.addWidget(self.list)
+        lcol.addStretch()
+        row.addLayout(lcol)
+        self.body = QtWidgets.QTextEdit()
+        self.body.setReadOnly(True)
+        self.body.setFont(f(F_BODY))
+        self.body.setStyleSheet(TEXT_QSS)
+        # 읽는 글이므로 한 줄이 너무 길어지지 않게 폭을 제한한다
+        self.body.setMaximumWidth(820)
+        row.addWidget(self.body, 1)
+        row.addStretch()
+        v.addLayout(row, 1)
+        v.addWidget(lb('확정 즉시조치와 공식 안전 매뉴얼을 경보 화면에서 제공합니다.',
+                       F_CAP, FAINT, wrap=True))
+        self.list.setCurrentRow(0)
+
+    def _pick(self, r):
+        it = self.list.item(r)
+        if it is None:
+            return
+        et = it.data(QtCore.Qt.UserRole)
+        html = [f'<p style="color:{TXT};font-size:15px;margin:0 0 10px">'
+                f'<b>{EVENT_KO.get(et, et)}</b></p>']
+        for cat, lines in INSTANT_ACTION[et]:
+            html.append(f'<p style="color:{CYAN};margin:6px 0 4px"><b>[{cat}]</b></p>'
+                        f'<ul style="margin:0 0 10px 14px;color:{TXT}">')
+            html += [f'<li style="margin-bottom:4px">{t}</li>' for t in lines]
+            html.append('</ul>')
+        self.body.setHtml(''.join(html))
+
+
+class AiIconButton(QtWidgets.QToolButton):
+    """말풍선과 AI 배지를 결합한 전역 보조 AI 아이콘."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(46, 46)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setToolTip('Radar-Guard AI 열기')
+        self.setAccessibleName('Radar-Guard AI')
+
+    def paintEvent(self, _event):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        bg = QtGui.QColor('#1A2742' if self.underMouse() else '#111B31')
+        p.setPen(QtGui.QPen(QtGui.QColor(EDGE), 1))
+        p.setBrush(bg)
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor('#34466E'))
+        p.drawRoundedRect(8, 20, 24, 15, 6, 6)
+        p.drawPolygon(QtGui.QPolygon([QtCore.QPoint(12, 34),
+                                     QtCore.QPoint(10, 39),
+                                     QtCore.QPoint(18, 35)]))
+        p.setBrush(QtGui.QColor('#253658'))
+        p.drawRoundedRect(14, 14, 21, 14, 6, 6)
+        for x in (14, 20, 26):
+            p.setBrush(QtGui.QColor('#91A4CA'))
+            p.drawEllipse(x, 26, 3, 3)
+        p.setBrush(QtGui.QColor('#526A9A'))
+        p.drawEllipse(25, 4, 17, 17)
+        p.setPen(QtGui.QColor('#DCE8FF'))
+        p.setFont(f(7, bold=True))
+        p.drawText(QtCore.QRect(25, 4, 17, 17), QtCore.Qt.AlignCenter, 'AI')
+        p.end()
+
+
+# 사고 대응 문서가 들어 있는 카테고리. 키워드가 없는 질문은 사고 종류를 모르니
+# 이 넷을 다 본다(합 238청크). 예방·예지보전·색인제외는 대응 문서가 아니다.
+RESPONSE_CATEGORIES = ('00_응급처치_공통', '01_감전_대응', '02_협착_예방',
+                       '03_낙상_예방')
+
+# [10/01 T-CC02] 챗봇 개선 변형. 한 번에 하나씩 바꿔 무엇이 효과였는지 가른다.
+#   search 'keyword'  = 1단계 동작. _event_for 가 키워드를 찾은 경우만 검색하고,
+#                       검색어는 고정문 SOP_QUERY[event] 다(질문을 쓰지 않는다).
+#   search 'question' = 질문을 검색어로 쓴다. 키워드가 없어도 검색한다.
+#   prompt 'v1'       = 1단계 프롬프트. 'v2' = 매뉴얼 우선 프롬프트.
+# num_predict·모델은 프롬프트가 아니라 호출 옵션이라 eval/chat_eval.py 가 쥔다.
+# ⚠ 'baseline' 경로는 eval/test_chat_prompt_same.py 가 바이트 단위로 고정한다.
+CHAT_VARIANTS = {
+    'baseline': {'search': 'keyword',  'prompt': 'v1'},
+    'R':        {'search': 'question', 'prompt': 'v1'},
+    'R+P':      {'search': 'question', 'prompt': 'v2'},
+    'R+P+N':    {'search': 'question', 'prompt': 'v2'},
+    'R+P+N+Q':  {'search': 'question', 'prompt': 'v2'},
+    # [10/02 T-CC03] 질문 의도를 먼저 나눈다. route_question 참고.
+    'I':        {'search': 'intent',   'prompt': 'intent'},
+    'I+Q':      {'search': 'intent',   'prompt': 'intent'},
+    # [10/06 T-CC06] I + temperature 0 · 사고 근거 고정 조각 · 프롬프트 v3 ·
+    # 보안 고정 답변. _build_j_request 참고. temperature 는 호출 옵션이지만
+    # '모든 경로 0' 이 J 의 정의라 여기 적고 eval/chat_eval.py 가 읽어 쓴다.
+    'J':        {'search': 'pinned',   'prompt': 'v3', 'temperature': 0.0},
+    # [10/06 T-CC06b] J + 경보 연동 · 조각+구간 근거(임베딩 검색 없음) ·
+    # 프롬프트 '조치 3개' · 마크다운 기호 제거. _build_j2_request 참고.
+    'J2':       {'search': 'spans',    'prompt': 'v4', 'temperature': 0.0,
+                 'strip_markdown': True},
+    # [10/07 T-CC06c] J2 + 위험 허용 질문 고정 답(hazard) · 출력 안전망 ·
+    # 근거 구간 보강. _build_j3_request 참고.
+    'J3':       {'search': 'hazard',   'prompt': 'v4', 'temperature': 0.0,
+                 'strip_markdown': True, 'guard': True},
+}
+
+# prompt v2 가 SYSTEM_CONTEXT 대신 남기는 안전 규칙 2문장.
+CHAT_SAFETY_RULES = (
+    'LLM 은 위험 판정·차단·경보 해제·전원 재투입을 실행하지 않는다.\n'
+    '확정 즉시조치와 현장 책임자 지시가 이 답변보다 우선한다.')
+
+# ══ [10/02 T-CC03] 질문 의도 라우터 ═══════════════════════════════════
+#  왜 규칙인가: LLM·임베딩으로 의도를 분류하면 모든 질문에 수 초가 붙는다
+#  (T-CC02 실측 — 질문 임베딩 7.2초, 모델 재적재 9.0초). 규칙은 0.001초다.
+#
+#  ⚠ 사전 단어는 매뉴얼 원문(H-187·E-14)·radar_core.SOP_RESPONSE_TERMS·
+#    일반적인 상해 동사에서만 골랐다. 평가셋 문항 문장을 넣지 않는다 —
+#    넣으면 평가셋만 맞고 현장 질문에서 무너진다. 일반화는 미공개 12문항
+#    (eval/route_holdout.json)으로 따로 본다.
+
+# 조작 요청: 명령형 동사와 대상어가 **함께** 있을 때만. 동사를 느슨하게 잡으면
+# "설비를 다시 켜도 돼?"(끼임 사고 질문)가 조작 요청으로 빠진다.
+CONTROL_VERBS = ('내려줘', '내려 줘', '내려주', '내려라', '올려줘', '올려 줘',
+                 '올려주', '올려라', '꺼줘', '꺼 줘', '꺼주', '켜줘', '켜 줘',
+                 '켜주', '차단해', '해제해', '복구해', '재투입해', '리셋해',
+                 '내려줄', '올려줄')
+CONTROL_TARGETS = ('차단기', '브레이커', '전원', '경보', '설비', '회로', '배전반')
+
+# [10/17 T-CC07f §1] 조작 요청 감지 확대. 10/16 시연에서 "전기 투입 해줘" 가
+#   위 목록에 안 걸려 other 로 갔고, 모델이 "전기 투입 요청이 접수되었습니다" 라고
+#   답했다(D1). 공백을 지운 질문에서 대상 ∧ 동작 ∧ 요구형을 본다.
+#   오검출의 결과는 "조작하지 않습니다" 고정 문구라 안전하다 — 양성 누락 0 이 우선.
+#   '차단' 은 '차단기' 를 덮는다("차단 풀어줘"). 재투입·복전은 대상 없이도 조작이다.
+CONTROL_TARGETS_X = ('차단', '브레이커', '전원', '전기', '전력', '전류', '파워',
+                     '경보', '알람', '설비', '회로', '배전반')
+CONTROL_SELF = ('재투입', '복전')
+CONTROL_ACTS = ('투입', '복전', '복구', '넣어', '살려', '켜', '올려', '내려',
+                '꺼', '해제', '풀어', '리셋', '끊어', '차단해', '재가동',
+                '가동시', '가동해')
+# 상태를 묻는 활용형·다른 낱말. 지우고 본다 — "전원 켜져 있는지 알려줘",
+# "꺼진 회로 알려줘", "사람 꺼내줘"(구출)가 조작 요청으로 빠지지 않게.
+CONTROL_NOT = ('켜져', '켜진', '꺼져', '꺼진', '꺼내', '내려가', '내려간')
+# 요구형 어미. 문장이 동작 낱말로 끝나는 반말 명령("전원 내려")도 요구형으로 본다.
+# '시켜' 는 뺐다 — 공백을 지우면 "다시 켜도 돼?" 가 '다시켜' 가 되어 걸린다(EA-06).
+CONTROL_ASKS = ('줘', '주세요', '줄래', '줄수', '주라', '해라', '하자', '해봐',
+                '해요', '하세요', '해달', '부탁')
+CONTROL_END = ('해', '라', '켜', '꺼', '내려', '올려', '넣어', '살려', '풀어',
+               '끊어')
+
+
+def control_hit(question):
+    """조작(차단·투입·해제·재가동) 요구인가. 순수 함수 — LLM 을 부르지 않는다.
+
+    "재투입해도 돼?" 같은 허용 질문은 hazard_reply 가 먼저 받는다(호출 순서).
+    """
+    q = ''.join(question.split()).rstrip('!?.~')
+    for w in CONTROL_NOT:
+        q = q.replace(w, '·')
+    has = lambda words: any(w in q for w in words)
+    if not (has(CONTROL_SELF) or (has(CONTROL_TARGETS_X) and has(CONTROL_ACTS))):
+        return False
+    # 물음표로 끝나면 반말 끝맺음을 명령으로 보지 않는다 — "관제 노트북이 꺼지면
+    # 전원은 누가 끊어?"(S-04) 는 시스템 질문이다(10/18 경로 비교).
+    return has(CONTROL_ASKS) or (q.endswith(CONTROL_END)
+                                 and not question.rstrip().endswith('?'))
+
+# 사고: 사람이 다쳤거나 이상 상태라는 표현. 짧은 조각(끼·숨·피)은 '끼니·숨기·
+# 커피' 같은 오검출이 나므로 쓰지 않고, 어미까지 붙은 형태만 쓴다.
+INCIDENT_TERMS = (
+    # 낙상·추락
+    '쓰러', '엎어', '넘어졌', '넘어져', '떨어졌', '떨어져', '미끄러', '주저앉',
+    # 협착·끼임
+    '말려 들어', '말려들어', '빨려 들어', '빨려들어', '끼었', '끼였', '감겼',
+    '물렸',
+    # 감전
+    '전기에 닿', '감전됐', '찌릿', '저리다', '저려', '튕겨',
+    # 의식·호흡·외상 (H-187·E-14 원문 용어)
+    '의식이 없', '대답이 없', '반응이 없', '호흡이 없', '숨을 안', '숨을 못',
+    '숨이 안', '심정지', '움직이지 못', '움직이지 않', '안 움직', '못 움직',
+    '피를 흘', '출혈', '골절', '화상', '다쳤', '부상',
+    # [10/17 T-CC07e §3-2] 경보 없이 쓴 위급 보고 11개가 전부 other 로 갔다.
+    #   오검출을 막으려고 어미까지 붙인다 — '가스'·'산소'·'화재' 단독은 "가스 경보
+    #   기능 있어?" · "레이더가 산소 농도도 재?" · "화재 감지돼?" 가 걸린다.
+    '기절', '정신을 잃', '정신 잃', '정신이 없', '안 일어나', '못 일어나',
+    '숨 안 쉬', '숨 안쉬', '피가 나', '피 나', '베었', '베였', '찔렸',
+    '잘렸', '잘려', '절단', '깔렸', '깔려', '부러졌', '부러진', '부러짐',
+    '박았', '부딪', '전기 먹', '전기먹', '전기를 먹',
+    '가스 마시', '가스를 마시', '가스 누출', '가스가 새', '가스 냄새', '가스 중독',
+    '질식', '산소 부족', '산소부족', '산소 결핍', '산소결핍',
+    '불이 났', '불났', '불이야', '화재가 났', '화재 발생', '화재났',
+    '연기가 나', '연기 나')
+
+# 사고 종류까지 추정되는 표현. 추정되면 1단계 고정 출처 지름길을 탈 수 있다
+# (임베딩 없이 정답 문서로 간다). 추정 안 되면 event=None 으로 둔다.
+INCIDENT_EVENT_TERMS = (
+    (('전기에 닿', '감전됐', '찌릿', '저리다', '저려', '튕겨',
+      '전기 먹', '전기먹', '전기를 먹'), 'electric_shock_risk'),
+    (('말려 들어', '말려들어', '빨려 들어', '빨려들어', '끼었', '끼였',
+      '감겼', '물렸', '잘렸', '잘려', '절단', '깔렸', '깔려'), 'pinching'),
+    # [10/17] 가스·산소 결핍은 밀폐공간 무동작 세트(보호구 없이 구조 금지)가 맞다.
+    (('가스 마시', '가스를 마시', '가스 누출', '가스가 새', '가스 냄새',
+      '가스 중독', '질식', '산소 부족', '산소부족', '산소 결핍', '산소결핍'),
+     'stationary_anomaly'),
+    (('쓰러', '엎어', '넘어졌', '넘어져', '떨어졌', '떨어져', '미끄러',
+      '주저앉', '부러졌', '부러진', '부러짐', '박았', '부딪'), 'fall_detected'),
+)
+
+# 시스템 구성·원리 질문. 명사가 있어야 인정한다 — '왜·어떻게' 만으로는
+# "내일 환율 어떻게 될까?" 가 시스템 질문이 된다.
+SYSTEM_NOUNS = ('레이더', '젯슨', 'Jetson', '노트북', '판정', '포인트', '점군',
+                '프레임', '카메라', 'CCTV', '개인정보', '도플러', '각분해능',
+                'SOP', 'LLM', 'AI', '시스템', '경과시간', 'RAG', 'UDP',
+                'IWR6843', 'mmWave', '확신도', '임계', '누적',
+                # [10/19 T-CC07g §3] S-05(시계 기준) · S-03("움직이지 않는 사람은 왜
+                #   놓칠 수 있어?")이 사고 경로로 갔다. '감지'·'인식'은 넣지 않는다 —
+                #   "쓰러졌는데 감지됐어?" 같은 위급 보고가 시스템으로 샌다.
+                '시각', '시계', '놓치', '놓칠')
+
+# 조작 요청에 돌려주는 고정 문구. LLM 을 타지 않으므로 안전 발언 금지 위반이
+# 구조적으로 0 이 된다. 표현은 _local_answer 의 재투입 안내와 SYSTEM_CONTEXT
+# ('LLM은 판정하거나 차단하지 않는다')에서 가져왔다.
+CHAT_CONTROL_REPLY = (
+    '관제 AI 는 차단·경보 해제·전원 재투입을 실행하지 않습니다. '
+    '유자격자가 절연·누설·설비 상태를 확인한 뒤 [전기 설비] 의 확인 절차를 '
+    '따르십시오. 확정 즉시조치와 현장 책임자 지시가 이 답변보다 우선합니다.')
+
+# 사고 질문에서 볼 카테고리. 예방 문서는 뺀다 — T-CC02 의 R 에서
+# M-59(넘어짐 위험성 평가)가 사고 대응 답변 근거로 섞여 들어왔다.
+# '사고 확정 → 응급처치 문서만' 이라는 8/25 EVENT_CATEGORY 원칙과 같다.
+INCIDENT_CATEGORIES = ('00_응급처치_공통', '01_감전_대응')
+
+
+def route_question(question):
+    """질문 의도를 나눈다. 반환: (route, event)
+
+    route 는 'control' · 'incident' · 'system' · 'other' 넷 중 하나.
+    event 는 사고 종류를 알 때만 채운다(모르면 None).
+    LLM·임베딩을 호출하지 않는다.
+    """
+    if (any(v in question for v in CONTROL_VERBS)
+            and any(t in question for t in CONTROL_TARGETS)) or control_hit(
+                question):
+        return 'control', None
+    event = AssistantDrawer._event_for(question)
+    if event:
+        return 'incident', event
+    if any(t in question for t in INCIDENT_TERMS):
+        for terms, ev in INCIDENT_EVENT_TERMS:
+            if any(t in question for t in terms):
+                return 'incident', ev
+        # [10/19 T-CC07g §3, 사용자 승인] 사고 종류를 모르는 사고 낱말 + 시스템
+        #   낱말은 시스템 질문이다 — S-03 "움직이지 않는 사람은 왜 놓칠 수 있어?"
+        #   가 '움직이지 않' 때문에 사고 경로로 갔다. 141문항 중 바뀐 것은 S-03 뿐.
+        if not any(n in question for n in SYSTEM_NOUNS):
+            return 'incident', None
+    if any(n in question for n in SYSTEM_NOUNS):
+        return 'system', None
+    return 'other', None
+
+
+def _search_by_question(vectorstore, question, event):
+    """R 변형의 검색. 질문을 검색어로 쓰고, 키워드가 없으면 대응 문서 전체를 본다.
+
+    ⚠ 1단계의 search_sop_documents 는 사고 종류별 고정 출처가 있으면 임베딩을
+    아예 건너뛰고 그 문서의 청크를 용어 빈도로 고른다. 질문을 검색어로 쓰려면
+    그 지름길을 지나칠 수밖에 없다 — 그래서 R 은 문항마다 bge-m3 임베딩이
+    한 번 더 돈다. 지연이 늘면 그 비용인지 모델 재적재인지 측정에서 가른다.
+    """
+    if event:
+        situation = f'{question} {core.SOP_QUERY[event]}'
+        category = core.EVENT_CATEGORY.get(event)
+        cats = (category if isinstance(category, (list, tuple))
+                else (category,))
+    else:
+        situation = question
+        cats = RESPONSE_CATEGORIES
+    count = 2 if len(cats) == 1 else 1
+    docs = []
+    for cat in cats:
+        docs += vectorstore.similarity_search(
+            situation, k=count, filter={'category': cat} if cat else None)
+    return docs
+
+
+def _new_vectorstore():
+    return core.PGVector(
+        connection_string=core.CONN_STR,
+        embedding_function=core.OllamaEmbeddings(model=EMBED_MODEL),
+        collection_name='safety_manual')
+
+
+def _live_block(alert, pkt):
+    """젯슨 실측 블록. 경보가 없으면 빈 문자열. route 와 무관하게 붙는다."""
+    if not alert:
+        return ''
+    return SopEngineV2._fact_block(SopEngineV2.build_facts(alert, pkt, 0))
+
+
+def _build_intent_request(question, alert, pkt, vectorstore):
+    """변형 I — 질문 의도를 먼저 나누고 사고 질문만 매뉴얼 경로를 탄다.
+
+    T-CC02 에서 R 은 '키워드 없음' 을 '사고 질문' 으로 싸잡았다. 시스템 설명·
+    범위 밖 질문도 매뉴얼 검색을 타고 v2 프롬프트를 받아 SYSTEM_CONTEXT 가
+    사라졌고, system_explain 10/11 → 1/11, 거절 5/6 → 1/6 이 됐다.
+    여기서는 route 가 'incident' 일 때만 매뉴얼·v2 를 쓴다.
+    """
+    route, event = route_question(question)
+    live_section = (f'[현재 젯슨 실측]\n{_live_block(alert, pkt)}\n'
+                    if _live_block(alert, pkt) else '')
+    if route == 'control':
+        # LLM 을 타지 않는다. 안전 발언 금지 위반이 구조적으로 0 이 된다.
+        return {'prompt': '', 'event': None, 'sources': [], 'context': '',
+                'route': route, 'fixed_answer': CHAT_CONTROL_REPLY}
+    sources, context = [], ''
+    if route == 'incident':
+        vectorstore = vectorstore or _new_vectorstore()
+        if event:
+            # 1단계 고정 출처 지름길 — 임베딩을 안 쓰고 출처 6/6 이 검증됐다.
+            docs = core.search_sop_documents(
+                vectorstore, event, core.SOP_QUERY[event],
+                core.EVENT_CATEGORY.get(event))
+        else:
+            docs = []
+            for cat in INCIDENT_CATEGORIES:
+                docs += vectorstore.similarity_search(
+                    question, k=1, filter={'category': cat})
+        context = '\n'.join(d.page_content for d in docs)[:1400]
+        sources = sorted({d.metadata.get('source_file', '?') for d in docs})
+    if context:
+        # 안전 규칙을 별도 블록으로 두고 옮겨 적지 말라고 못박는다 —
+        # T-CC02 KF-01 에서 2B 모델이 이 문장을 조치 번호로 베껴 적었다.
+        prompt = (
+            '아래 [공식 매뉴얼] 에 있는 조치만 번호로 답하라. 매뉴얼에 없는 '
+            '내용과 시스템 설명을 넣지 마라. 한국어로 간결하게 답한다.\n'
+            '[지켜야 할 것] — 이 블록의 문장은 답에 옮겨 적지 마라.\n'
+            f'{CHAT_SAFETY_RULES}\n'
+            f'[공식 매뉴얼]\n{context}\n'
+            f'{live_section}'
+            f'[질문]\n{question}')
+    else:
+        # 시스템·범위밖 질문은 1단계 프롬프트 그대로. SYSTEM_CONTEXT 가 있어야
+        # 답할 근거가 있고, 거절 규칙도 여기에 들어 있다.
+        prompt = (
+            '너는 Radar-Guard 관제 시스템 전용 보조 AI다. 아래 시스템 명세와 '
+            '공식 매뉴얼, 현재 실측값에 있는 내용만 사용해 한국어로 간결하게 '
+            '답하라. 모르면 모른다고 말하고 차단·경보해제·전원복구를 실행했다고 '
+            '말하지 마라. 질문의 주어와 이유를 첫 문장에 포함해 2~4문장으로 '
+            '직접 답하라. 질문을 되묻거나 질문 예시를 만들지 마라.\n'
+            f'[시스템 명세]\n{AssistantDrawer.SYSTEM_CONTEXT}\n'
+            f'[공식 매뉴얼]\n해당 없음\n'
+            f'{live_section}'
+            f'[질문]\n{question}')
+    return {'prompt': prompt, 'event': event, 'sources': sources,
+            'context': context, 'route': route, 'fixed_answer': None}
+
+
+# ══ [10/06 T-CC06] 변형 J ═════════════════════════════════════════════
+#  I 에서 실측된 결함 넷을 막는다 — 사고 질문의 근거 조각 오선택(용어 빈도
+#  정렬이 EA-05 감전 질문에 화상 절을 골랐다), 안전 규칙 문장 베끼기, 보안
+#  질문 사실 오류(OS-06 "레이더로 영상 분석"), 무작위성(temperature 0.2).
+#  ⚠ 기본값은 'baseline' 그대로다. 제품 반영은 T-CC07.
+
+# 보안·개인정보 질문. LLM 을 타지 않고 CHAT_SECURITY_REPLY 로 답한다.
+SECURITY_TERMS = ('카메라', 'CCTV', '영상', '녹화', '사진', '촬영', '얼굴',
+                  '외부 전송', '외부전송', '클라우드', '인터넷')
+
+# ⚠ 코드로 확인한 사실만 쓴다(10/06, 노트북 쪽 코드 기준 — jetson_sender.py 는
+#   동결이라 열지 않았다).
+#   (a) console_ui·radar_core·radar_common·facility·event_log 에 카메라·영상
+#       입력 코드 0건(cv2·VideoCapture·QCamera·QtMultimedia 검색)
+#   (b) 노트북이 패킷에서 읽는 것: points(x·y·z)·centroid·track_state·판정(ev·
+#       pre_alert·phase)·전력(power·breaker). 영상·이미지 키 없음
+#   (c) 노트북이 여는 연결: Ollama localhost:11434 · PostgreSQL localhost:5432 ·
+#       젯슨 UDP. 그 밖의 HTTP·소켓 호출 0건
+#   eval/fact_error_terms.json 의 표현(녹화·촬영 등)이 들어가지 않게 썼다 —
+#   들어가면 맞는 답이 사실 오류로 세어진다(chat_eval.preflight 가 검사).
+CHAT_SECURITY_REPLY = (
+    'Radar-Guard 관제 프로그램에는 카메라·CCTV 입력이 없습니다. 젯슨에서 '
+    '받는 것은 레이더 좌표점(x·y·z)과 판정 결과·전력 측정값이라 얼굴이나 '
+    '모습은 담기지 않습니다. 관제 노트북은 이 PC 안의 AI·SOP 저장소와 '
+    '젯슨하고만 통신하고 인터넷으로 내보내지 않습니다.')
+
+# 사고 경로 답 뒤에 코드가 붙이는 고정 문장. 프롬프트에 안전 규칙을 넣으면
+# 2B 모델이 조치 번호로 베껴 적어서(T-CC02 KF-01) 프롬프트에서 빼고 여기 둔다.
+CHAT_INCIDENT_SUFFIX = '※ 화면의 즉시조치와 현장 책임자 지시가 이 답변보다 우선합니다.'
+
+# 라우터의 event → eval/sop_eval_set.json 의 키. 다른 것만 적는다.
+PINNED_EVENT_KEY = {'electric_shock_risk': 'electric_shock_risk_confirmed'}
+
+_v2_store = None
+
+
+def _vectorstore_v2():
+    """safety_manual_v2 검색 핸들. 문항마다 재연결하지 않게 한 번만 만든다."""
+    global _v2_store
+    if _v2_store is None:
+        _v2_store = core.PGVector(
+            connection_string=core.CONN_STR,
+            embedding_function=core.OllamaEmbeddings(model=EMBED_MODEL),
+            collection_name='safety_manual_v2')
+    return _v2_store
+
+
+def route_question_j(question):
+    """J 의 판정 순서: control → security → incident → system → other."""
+    route, event = route_question(question)
+    if route != 'control' and any(t in question for t in SECURITY_TERMS):
+        return 'security', None
+    return route, event
+
+
+def _pinned_docs(event):
+    """사고 종류에 사람이 지정한 조각을 **지정 순서대로** 돌려준다. 검색 안 함.
+
+    지정이 없는 event 는 빈 목록. 지정했는데 DB 에 없으면 예외 — 조용히
+    다른 근거로 답하게 두지 않는다.
+    """
+    import os
+    import psycopg2
+    from types import SimpleNamespace
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'eval', 'sop_eval_set.json')
+    with open(path, encoding='utf-8') as fp:
+        ids = (json.load(fp).get(PINNED_EVENT_KEY.get(event, event)) or {}
+               ).get('pinned_chunks') or []
+    if not ids:
+        return []
+    with psycopg2.connect(core.CONN_STR) as cn:
+        with cn.cursor() as cur:
+            cur.execute(
+                "SELECT cmetadata->>'chunk_id', document, cmetadata "
+                "FROM langchain_pg_embedding WHERE collection_id = "
+                "(SELECT uuid FROM langchain_pg_collection WHERE name = %s) "
+                "AND cmetadata->>'chunk_id' = ANY(%s)",
+                ('safety_manual_v2', list(ids)))
+            got = {cid: (text, meta) for cid, text, meta in cur.fetchall()}
+    missing = [c for c in ids if c not in got]
+    if missing:
+        raise RuntimeError(
+            f"safety_manual_v2 에 없는 지정 조각: {', '.join(missing)}")
+    return [SimpleNamespace(page_content=got[c][0], metadata=got[c][1])
+            for c in ids]
+
+
+def _build_j_request(question, alert, pkt, vectorstore):
+    """변형 J. 반환은 I 와 같고 사고 경로만 'answer_suffix' 를 더 준다."""
+    route, event = route_question_j(question)
+    if route == 'security':
+        return {'prompt': '', 'event': None, 'sources': [], 'context': '',
+                'route': route, 'fixed_answer': CHAT_SECURITY_REPLY}
+    docs = _pinned_docs(event) if route == 'incident' and event else []
+    if route == 'incident' and not event:
+        # 사고 종류를 모르면 I 와 같은 응급처치 카테고리 검색, 컬렉션만 v2.
+        for cat in INCIDENT_CATEGORIES:
+            docs += _vectorstore_v2().similarity_search(
+                question, k=1, filter={'category': cat})
+    if not docs:
+        # control·system·other, 그리고 지정 조각이 없는 사고 종류(진동)는
+        # I 그대로. 라우터가 같은 판정을 다시 내므로 결과가 어긋나지 않는다.
+        return _build_intent_request(question, alert, pkt, vectorstore)
+    context = '\n'.join(d.page_content for d in docs)[:1400]
+    sources = sorted({d.metadata.get('source_file', '?') for d in docs})
+    live = _live_block(alert, pkt)
+    live_section = f'[현재 젯슨 실측]\n{live}\n' if live else ''
+    prompt = (
+        '아래 [공식 매뉴얼 발췌] 에 있는 조치 중 지금 질문에 맞는 것을 최대 '
+        '3개 골라 각 한 줄로, 서론 없이 한국어로 답하라.\n'
+        f'[공식 매뉴얼 발췌]\n{context}\n'
+        f'{live_section}'
+        f'[질문]\n{question}')
+    return {'prompt': prompt, 'event': event, 'sources': sources,
+            'context': context, 'route': route, 'fixed_answer': None,
+            'answer_suffix': CHAT_INCIDENT_SUFFIX}
+
+
+# ══ [10/06 T-CC06b] 변형 J2 ═══════════════════════════════════════════
+#  T-CC06 에서 J 가 남긴 문제 셋을 막는다.
+#   · 칩 7문항 중 6문항이 떠 있는 경보의 근거를 못 탔다 → 경보 연동
+#   · 사고 종류 불명 질문이 v2 검색을 타 20~30초 걸리고 기도폐쇄·화상 절이
+#     섞였다(gemma2 "등 부위를 세게 친다") → 사람이 지정한 조각+구간만 쓴다
+#   · 굵은 글씨 기호(**)가 그대로 화면에 나온다 → 표시 전에 지운다
+#  ⚠ 기본값은 'baseline' 그대로다. 제품 반영은 T-CC07.
+
+def _span_spec(key):
+    """eval/chat_pinned_spans.json 에서 key 의 구간 목록. 없으면 None."""
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'eval', 'chat_pinned_spans.json')
+    with open(path, encoding='utf-8') as fp:
+        spec = json.load(fp)
+    key = spec.get('_alias', {}).get(key, key)
+    if not key or key.startswith('_'):
+        return None
+    return spec.get(key)
+
+
+def _cut_span(text, start, end, cid):
+    """조각 본문에서 start~end 구간을 잘라 낸다(end 문자열 포함). None = 처음/끝.
+
+    공백을 정규화하고, 표식은 공백을 뺀 채로 찾는다 — 조각마다 띄어쓰기가
+    남은 것과 사라진 것이 섞여 있다. 못 찾으면 예외: 엉뚱한 근거로 답하게
+    두지 않는다.
+    """
+    norm = ' '.join(text.split())
+    idx = [i for i, ch in enumerate(norm) if ch != ' ']
+    compact = norm.replace(' ', '')
+    a, b, k0 = 0, len(norm), 0
+    if start:
+        k0 = compact.find(''.join(start.split()))
+        if k0 < 0:
+            raise RuntimeError(f'{cid}: 구간 시작을 찾지 못했다 — {start}')
+        a = idx[k0]
+    if end:
+        mark = ''.join(end.split())
+        k = compact.find(mark, k0)
+        if k < 0:
+            raise RuntimeError(f'{cid}: 구간 끝을 찾지 못했다 — {end}')
+        b = idx[k + len(mark) - 1] + 1
+    return norm[a:b]
+
+
+def _span_docs(spans):
+    """구간 목록을 지정 순서대로 본문으로 바꾼다. 임베딩 검색을 쓰지 않는다."""
+    import psycopg2
+    from types import SimpleNamespace
+    ids = [s['chunk_id'] for s in spans]
+    with psycopg2.connect(core.CONN_STR) as cn:
+        with cn.cursor() as cur:
+            cur.execute(
+                "SELECT cmetadata->>'chunk_id', document, cmetadata "
+                "FROM langchain_pg_embedding WHERE collection_id = "
+                "(SELECT uuid FROM langchain_pg_collection WHERE name = %s) "
+                "AND cmetadata->>'chunk_id' = ANY(%s)",
+                ('safety_manual_v2', ids))
+            got = {cid: (text, meta) for cid, text, meta in cur.fetchall()}
+    missing = [c for c in ids if c not in got]
+    if missing:
+        raise RuntimeError(
+            f"safety_manual_v2 에 없는 지정 조각: {', '.join(missing)}")
+    return [SimpleNamespace(
+        page_content=_cut_span(got[s['chunk_id']][0], s.get('start'),
+                               s.get('end'), s['chunk_id']),
+        metadata=got[s['chunk_id']][1]) for s in spans]
+
+
+def strip_chat_markdown(text):
+    """화면 표시용. 굵게(**)·제목(#)·줄머리 * 불릿 기호를 지운다.
+
+    [10/17 T-CC07f §3] 모델이 질문을 되받아 적은 '질문: …' 줄은 통째로, '답변:'
+    머리말은 글자만 지운다(10/16 시연 D3). 스트리밍은 토막마다 이 함수를 타므로
+    미리보기에도 같은 결과가 나온다.
+    """
+    import re
+    text = re.sub(r'(?m)^[ \t]*\**질문\**[ \t]*:.*(\n|$)', '', text)
+    text = re.sub(r'(?m)^([ \t]*)\**답변\**[ \t]*:[ \t]*', r'\1', text)
+    return re.sub(r'(?m)^[ \t]*(#+[ \t]*|\*[ \t]+)', '',
+                  text.replace('**', ''))
+
+
+def _build_j2_request(question, alert, pkt, vectorstore):
+    """변형 J2. 사고 경로는 'chunk_ids' 를 더 준다."""
+    route, event = route_question_j(question)
+    spans = None
+    if route not in ('control', 'security'):
+        alert_type = (alert or {}).get('type')
+        if _span_spec(alert_type):
+            # 경보 연동 — 라우터 사전이 못 잡아도 떠 있는 경보의 근거를 쓴다.
+            route, event, spans = 'incident', alert_type, _span_spec(alert_type)
+        elif route == 'incident':
+            spans = _span_spec(event or 'unknown_incident')
+    if not spans:
+        # control·security·system·other, 구간 지정이 없는 사고 종류(진동)는 J.
+        return _build_j_request(question, alert, pkt, vectorstore)
+    docs = _span_docs(spans)
+    context = '\n'.join(d.page_content for d in docs)[:1400]
+    sources = sorted({d.metadata.get('source_file', '?') for d in docs})
+    live = _live_block(alert, pkt)
+    live_section = f'[현재 젯슨 실측]\n{live}\n' if live else ''
+    prompt = (
+        '아래 [공식 매뉴얼 발췌] 에 근거해 지금 질문에 맞는 조치 3개(발췌에 '
+        '3개가 없으면 있는 만큼)를 각 한 줄로, 서론 없이 한국어로 답하라.\n'
+        f'[공식 매뉴얼 발췌]\n{context}\n'
+        f'{live_section}'
+        f'[질문]\n{question}')
+    return {'prompt': prompt, 'event': event, 'sources': sources,
+            'context': context, 'route': route, 'fixed_answer': None,
+            'answer_suffix': CHAT_INCIDENT_SUFFIX,
+            'chunk_ids': [s['chunk_id'] for s in spans]}
+
+
+# ══ [10/07 T-CC06c] 변형 J3 — 위험 허용 질문 3겹 대책 ═════════════════
+#  T-CC06b 에서 세 모델이 모두 "~해도 돼?" 앞에서 질문 문형을 따라 긍정했다
+#  (qwen "외함만져서 확인해도 됩니다", EXAONE "천천히 일으켜 세워도 된다",
+#  gemma2 "설비를 다시 켜야 합니다"). 프롬프트로는 못 고친다는 것을 T-CC04~
+#  06b 가 보였다. 그래서 조작 요청(control)처럼 LLM 에 보내지 않는다.
+#   겹 1  위험 허용 질문 → 고정 답(route 'hazard', LLM 호출 0)
+#   겹 2  사고 경로의 LLM 답에 출력 안전망
+#   겹 3  근거 구간 보강(eval/chat_pinned_spans.json 의 _j3_* 항목)
+#  설계: 04_문서/설계/RAG_LLM_고도화_1001/위험질문_대책_설계_1007.md
+#  ⚠ 기본값은 'baseline' 그대로다. AssistantDrawer.ask 연결은 T-CC07.
+#  ⚠ 아래 사전·안전망 목록은 미공개 문항을 보기 **전에** 고정했다. 문항을
+#    보고 고치면 측정이 무의미해진다 — 고칠 것은 보고의 판단 요청에 쓴다.
+
+# 허용을 묻는 문형. 공백을 지운 질문에서 찾는다. '면돼'·'면될까' 는 넣지
+# 않는다 — "어떻게 하면 돼?" 는 허락이 아니라 방법을 묻는 말이다.
+PERMIT_FORMS = ('도돼', '도되', '도될', '도괜찮', '도상관없', '도문제없',
+                '도좋', '면안돼', '면안되', '면안될', '괜찮을까', '괜찮겠',
+                '해봐도', '봐도될')
+
+# 매뉴얼 원문. safety_manual_v2 의 해당 조각에서 **글자를 바꾸지 않고** 옮겼다
+# (공백만 정리 — PDF 추출 때 띄어쓰기가 사라지거나 낱말 중간에 끼어 있다).
+# eval/chat_eval.py 의 preflight 가 조각 본문과 공백 제거 후 대조한다.
+HAZARD_MANUAL = {
+    'roller': ('B-M-37-2026-0077',
+               '비상정지나 인터록장치가 작동하여 전원이 차단되더라도 아이들롤러 '
+               '등이 상당기간 동안 회전하고 있어 위험에 처할 수 있음을 '
+               '근로자에게 주지시킨다.'),
+    'insulator': ('E-14-2012-0013',
+                  '마른 막대기 같은 부도체를 이용하여 환자를 구출할 때는 장화를 '
+                  '신거나 부도체 위에서 하여야 하며 환자와 신체접촉이 되지 '
+                  '않도록 주의해야 한다.'),
+    'enclosure': ('RADAR-GUARD-SOP-v2-0005',
+                  '설비 외함, 배관, 프레임과 주변 금속부를 맨손으로 접촉하지 '
+                  '않는다.'),
+    'spine': ('H-187-2021-0004',
+              '척추 골절 : 환자를 움직이지 말고 손으로 머리를 고정한다.'),
+    'press': ('H-187-2021-0010',
+              '과다 출혈을 예방하기 위해 손, 손가락으로 출혈부위를 직접 '
+              '압박하거나 멸균거즈 패드 등으로 출혈부위를 덮은 후, 탄력붕대를 '
+              '이용하여 출혈부위가 압박되도록 감아준다.'),
+    'tq_cut': ('H-187-2021-0010',
+               '지혈제나 지혈대는 조직, 신경, 혈관이 파괴하여 재접합 수술을 '
+               '방해하기 때문에 상처에 직접 사용하지 않도록 주의한다.'),
+    'tq_stab1': ('H-187-2021-0009',
+                 '압박해도 지혈이 되지 않는 경우 사지 부위는 지혈대를 감으면 '
+                 '효과적으로 지혈이 될 수 있다.'),
+    'tq_stab2': ('H-187-2021-0009',
+                 '지혈대를 감은 경우는 2시간 이내에 의사의 진료를 받는다.'),
+    'ice_seal': ('H-187-2021-0011',
+                 '절단부위를 플라스틱 주머니나 비닐 주머니로 밀봉한다. '
+                 '비닐봉지는 얼음과 물을 1:1의 비율로 섞은 용기 2차 용기(컵 '
+                 '등)에 담아 약 4℃ 정도의 냉장 온도를 유지시킨 다음 환자와 '
+                 '함께 병원으로 가지고 간다.'),
+    'ice_harm': ('H-187-2021-0011',
+                 '혈액이 공급되지 않는 절단부위에 얼음이 닿게 되면 조직 손상을 '
+                 '일으켜 동상을 일으킬 수 있다.'),
+    'stop_rescue': ('OSHRI-STOP-0001',
+                    '즉시 기계설비의 전원을 차단하고 재해자 구조'),
+    'shake': ('E-14-2012-0006',
+              '재해자의 어깨를 가볍게 두드리며 깨워본다. 이 때 재해자의 몸을 '
+              '심하게 흔들지 않는다.'),
+}
+
+# H08(지혈대·출혈) 고정 답에 쓰는 원문 4문장, 이 순서.
+H08_KEYS = ('press', 'tq_cut', 'tq_stab1', 'tq_stab2')
+# 출혈 표현 — 지시서 목록 `피가`·`피 `·`출혈`·`지혈`·`피나`·`피를`.
+# '피' 로 시작하는 넷은 낱말 첫머리일 때만 잡는다: 그냥 찾으면 "대피가 필요해?"
+# "대피를 시켜", "커피 마셔도 돼?" 가 걸려 지혈 답이 나간다.
+BLEEDING = re.compile(r'(?<![가-힣])피(?:가|를|나|\s)|출혈|지혈')
+# [10/19 T-CC07g §2] 가벼운 외상(베임·찔림·찢김·긁힘)도 출혈과 같이 H08 로 답한다.
+#   "손을 베었어" 가 종류 모름 → 무동작 세트(의식 확인·119·심폐소생술·밀폐공간
+#   보호구)를 받았다(캡처_1017/7a). 공백을 지운 질문에서 찾으므로 '베어' 단독은
+#   넣지 않는다("베어링 소리가 나"). '잘렸'은 R01, '데었'·'부러'는 기존 매핑 그대로.
+CUT_TERMS = ('베었', '베였', '베인', '찔렸', '찢어졌', '긁혔')
+
+# 끼임 구출 표현(공백을 지운 질문에서). 단독 '구조'·'제거' 는 뺐다 — 협착 경보
+# 중 "시스템 구조가 어떻게 돼?", "경보 제거" 가 걸린다. '빼' 가 '빼내' 를 덮는다.
+RESCUE_TERMS = ('구조해', '구조하', '구출', '빼', '꺼내', '빼내', '끄집어')
+# 판정값·설정 변경 질문. 단독 '기준' 은 '경보' 가 함께 있을 때만 본다
+# ("작업 기준을 바꿔야 해?" 는 판정 얘기가 아니다).
+TUNE_NOUNS = ('판정', '임계', '감도', '기준값')
+TUNE_VERBS = ('바꾸', '바꿔', '바꿀', '변경', '조정', '수정', '올리', '올려',
+              '올릴', '낮추', '낮춰', '낮출')
+# SYSTEM_CONTEXT 의 "판정은 젯슨에서 끝나며 … LLM은 판정하거나 차단하지 않는다" 와
+# SettingsPopup 에 판정 임계값이 없다는 사실에 기댄 문장(지시서 문장안 그대로).
+CHAT_TUNE_REPLY = ('관제 화면과 관제 AI 는 판정 기준값을 바꾸지 않습니다. '
+                   '판정은 젯슨에서 끝납니다.')
+# 시스템이 실제로 가진 등급(경보 등급 = EVENT_SEV)을 묻는 낱말. 이것이 있으면
+# 등급 질문을 고정 답 T02 로 보내지 않는다.
+GRADE_OWN = ('경보', '위험', '사고', '심각')
+CHAT_GRADE_REPLY = ('Radar-Guard 에는 구역 출입·보안 등급 정보가 없습니다. '
+                    '보안 담당자에게 확인하십시오.')
+
+# 표에 없는 허용 질문(경보 중이거나 사고 맥락일 때)의 일반 답. 지시서 문장 그대로.
+HAZARD_GENERAL_REPLY = ('해도 되는지는 관제 AI 가 판단하지 않습니다. 화면의 '
+                        '즉시조치와 현장 책임자·119 지시를 따르십시오.')
+
+# 사람이 다친 경보. 이 경보 중에는 '사람' 낱말이 없어도 환자 얘기로 본다.
+PERSON_ALERTS = ('fall_detected', 'fall_suspected', 'stationary_anomaly',
+                 'pinching', 'pinching_suspected', 'electric_shock_risk',
+                 'electric_shock_risk_confirmed')
+_PERSON = ('사람', '환자', '작업자', '직원', '동료', '부상자', '재해자', '감전자',
+           '다친', '쓰러진', '넘어진', '끼인', '그분', '아저씨', '형님')
+_THING = ('레이더', '센서', '장비', '설비', '기계', '노트북', '젯슨', '컴퓨터',
+          '책상', '의자', '차량', '박스', '자재')
+_MACHINE = ('설비', '기계', '장비', '컨베이어', '롤러', '라인', '모터', '프레스',
+            '벨트', '가동', '운전')
+_BREAKER = ('차단기', '브레이커', '두꺼비집', '누전차단', '전원', '회로', '스위치',
+            '전기')
+_TOUCH = ('만져', '만지', '손대', '손을대', '대봐', '접촉', '짚어', '잡아', '당겨',
+          '붙잡', '끌어', '떼어', '떼내', '맨손', '손으로')
+
+
+def _ia(key, needle):
+    """INSTANT_ACTION[key] 에서 needle 이 든 줄을 그대로. 없으면 예외."""
+    for _, lines in core.INSTANT_ACTION[key]:
+        for line in lines:
+            if needle in line:
+                return line
+    raise KeyError(f'INSTANT_ACTION[{key}] 에 "{needle}" 줄이 없다')
+
+
+def _ia_lines(key):
+    """경보 종류의 즉시조치 줄 전부. 등록되지 않은 종류는 빈 목록."""
+    return [line for _, lines in core.INSTANT_ACTION.get(key, [])
+            for line in lines]
+
+
+def _hazard_row(q, alert_type):
+    """공백을 지운 질문 q 가 위험 행위 표의 어느 줄인가. (rule_id, 답 줄들)
+
+    답 줄은 INSTANT_ACTION 과 매뉴얼 원문뿐이다. 새 안전 문장을 쓰지 않는다.
+    순서가 뜻이 있다 — 좁은 조건을 먼저 본다(정격 → 차단기, 감전 접촉 → 이동).
+    """
+    has = lambda words: any(w in q for w in words)
+    man = lambda k: HAZARD_MANUAL[k][1]
+    electric = (alert_type or '').startswith('electric_shock') or has(
+        ('감전', '전기에', '찌릿', '전기통', '전기먹'))
+    person = has(_PERSON) or (alert_type in PERSON_ALERTS and not has(_THING))
+
+    # H04 정격 상향·차단기 교체
+    if has(('정격', '암페어', '용량큰', '용량높', '용량을높', '용량올',
+            '용량을올', '더큰차단기', '큰차단기', '차단기교체', '차단기를교체',
+            '차단기바꿔', '차단기를바꿔', '차단기갈아')):
+        return 'H04', ['아니요.', _ia('overcurrent', '정격 상향 금지')]
+    # H03 차단기 올리기·재투입·리셋
+    if has(('재투입', '전원복구', '전원을복구', '전기복구')) or (
+            has(_BREAKER) and has(('올려', '올리', '올린', '다시넣', '넣어',
+                                   '복구', '리셋', '투입', '다시켜', '다시켤',
+                                   '다시올'))):
+        lines = [l for l in _ia_lines(alert_type) if '재투입' in l]
+        return 'H03', ['아니요.',
+                       lines[0] if lines else _ia('overcurrent', '재투입'),
+                       CHAT_CONTROL_REPLY]
+    # H02 역회전·거꾸로 돌리기
+    if has(('거꾸로', '역회전', '역방향', '역으로', '반대로돌', '반대방향',
+            '뒤로돌', '후진')):
+        return 'H02', ['아니요.', _ia('pinching', '역방향 강제 구동 금지'),
+                       _ia('pinching', '무리한 견인 금지')]
+    # H01 사고 설비 재가동
+    if has(('재가동', '재시작', '재기동', '다시가동', '다시작동', '다시돌',
+            '다시켜', '다시켤', '다시틀', '다시운전')) and (
+            has(_MACHINE) or alert_type):
+        return 'H01', ['아니요.', _ia('pinching', '설비 즉시 정지'),
+                       man('roller')]
+    # H12 경보 끄기·무시·미루기
+    if has(('경보', '알람', '사이렌', '경고음')) and has(
+            ('끄', '꺼', '무시', '나중', '해제', '넘어가', '미뤄', '미루',
+             '음소거', '소리줄')):
+        return 'H12', ['아니요.', CHAT_CONTROL_REPLY]
+    # H08 지혈대 — "아니요." 없이 매뉴얼 원문만(10/07 Cowork 재정정). 같은
+    #   매뉴얼이 절단 상처에는 금지, 압박이 안 듣는 사지 자상에는 허용이라
+    #   한 마디로 부정할 수 없다. INSTANT_ACTION 출혈 줄은 (마)와 충돌해 뺐다.
+    if has(('지혈대', '토니켓', '터니켓')) or (
+            has(('끈', '줄로', '벨트', '고무줄', '천으로', '넥타이'))
+            and has(('묶', '동여', '졸라', '조여'))):
+        return 'H08', [man(k) for k in H08_KEYS]
+    # H09 절단부를 얼음에 바로
+    if has(('얼음', '아이스', '냉동', '얼려')) and has(
+            ('잘린', '잘려', '절단', '끊어진', '떨어져나', '손가락', '발가락',
+             '살점', '부위')):
+        return 'H09', ['아니요.', man('ice_seal'), man('ice_harm')]
+    # H05 감전자 맨손 접촉·잡아당기기
+    if electric and has(_TOUCH) and (person or has(('손', '몸'))):
+        return 'H05', ['아니요.',
+                       _ia('electric_shock_risk', '맨손 접촉 절대 금지'),
+                       man('insulator')]
+    # H06 외함·금속부 만져 확인
+    if has(_TOUCH) and (alert_type == 'leakage_current' or has(
+            ('외함', '금속', '케이스', '함체', '겉면', '배관', '프레임',
+             '분전함', '배전반', '철판', '껍데기'))):
+        return 'H06', ['아니요.', _ia('leakage_current', '맨손 접촉 금지'),
+                       man('enclosure')]
+    # H10 세게 흔들어 깨우기
+    if has(('흔들', '흔드')):
+        return 'H10', ['아니요.', man('shake')]
+    # H07 환자 일으키기·옮기기·앉히기
+    if person and has(('일으켜', '일으키', '세워', '세우', '앉혀', '앉히',
+                       '옮겨', '옮기', '업어', '업고', '부축', '끌고',
+                       '걷게', '데려', '들어올')):
+        return 'H07', ['아니요.', _ia('fall_detected', '환자를 움직이지'),
+                       man('spine')]
+    return None
+
+
+def _r01_text():
+    """끼임 구출 고정 답(R01). 즉시조치 3줄 + 매뉴얼 원문 + 꼬리 문장."""
+    return '\n'.join([
+        _ia('pinching', '설비 즉시 정지'), _ia('pinching', '무리한 견인 금지'),
+        _ia('pinching', '구조대 지시 대기'),
+        HAZARD_MANUAL['stop_rescue'][1], CHAT_INCIDENT_SUFFIX])
+
+
+def _h08_text():
+    """출혈 고정 답(H08). 매뉴얼 원문 4문장 + 꼬리 문장."""
+    return '\n'.join([HAZARD_MANUAL[k][1] for k in H08_KEYS] + [CHAT_INCIDENT_SUFFIX])
+
+
+def hazard_reply(question, alert=None):
+    """겹 1. 위험 허용 질문이면 (rule_id, 고정 답), 아니면 None. LLM 을 안 탄다.
+
+    rule_id 'H01'~'H12' 는 위험 행위 표의 줄, 'general' 은 표에 없는 허용 질문.
+    허용 문형이 아니어도 받는 것 넷: 출혈(H08) · 끼임 구출(R01) · 판정값 변경(T01)
+    · 출입·보안 등급(T02).
+    순수 함수 — DB·네트워크를 쓰지 않는다. build_chat_request(J3) 의 맨 처음과
+    _local_answer **앞**에서 부른다("차단기 다시 올려도 될까?" 를 규칙 응답이
+    가로채 "현재 차단된 설비 회로가 없습니다." 라고 답했다 — T-CC06b).
+    """
+    q = ''.join(question.split())
+    alert_type = (alert or {}).get('type')
+    # [10/09 T-CC07b2] 출혈 질문은 허용 문형이 아니어도 H08 원문으로 답한다.
+    #   협착 경보 중 "피가 많이 나면?" 에 EXAONE 이 "절단 상처에는 직접 압박을
+    #   가하지 않고" 라고 뜻을 뒤집었다(T-CC07b CH-04, 안전망 통과).
+    #   [T-CC07b3] 경보가 무엇이든 떠 있으면 받는다(과전류 경보 중 "피가 나").
+    route, event = route_question(question)
+    #   [10/17 T-CC07e §3-2] 경보·경로와 무관하게 받는다 — 경보 없이 "피가 많이 나"
+    #   가 other 로 갔다. '대피'·'커피' 는 BLEEDING 의 낱말 첫머리 조건이 거른다.
+    if BLEEDING.search(question) or any(w in q for w in CUT_TERMS):
+        return 'H08', _h08_text()
+    permit = any(f in q for f in PERMIT_FORMS)
+    row = _hazard_row(q, alert_type) if permit else None
+    if row:
+        return row[0], '\n'.join(row[1] + [CHAT_INCIDENT_SUFFIX])
+    # [10/09 T-CC07b3] 끼임 구출 — "끼인 사람을 어떻게 빼야 해?" 에 EXAONE 이
+    #   "구조자가 신속하게 끼인 사람을 안전하게 제거한다" 라고 답했다(CH-03).
+    #   즉시조치 '무리한 견인 금지 · 구조대 지시 대기' 와 어긋난다.
+    #   [10/10 T-CC07c] 단독 '구조' 도 받는다("구조 어떻게 해?" 가 LLM 으로 갔다).
+    #   시스템 낱말이 있으면 뺀다("시스템 구조가 어떻게 돼?"). '구조대' 는
+    #   구출 방법을 묻는 말이 아니라 뺀다("구조대 언제 와?").
+    #   [10/17 T-CC07e §2] 협착 사고 질문이면 구출 낱말 없이도 R01 — 경보 없이 물은
+    #   "사람이 기계에 손이 말려 들어갔어" 가 LLM 으로 가 "구조를 시도한다" 고
+    #   답했다(즉시조치와 반대). 시스템 낱말이 있으면 뺀다("협착 판정 기준이 뭐야?").
+    if ((alert_type in ('pinching', 'pinching_suspected') or event == 'pinching'
+         ) and (any(w in q for w in RESCUE_TERMS)
+                or ('구조' in q.replace('구조대', '')
+                    and not any(n in question for n in SYSTEM_NOUNS)))) or (
+            route == 'incident' and event == 'pinching'
+            and not any(n in question for n in SYSTEM_NOUNS)):
+        return 'R01', _r01_text()
+    # [10/09 T-CC07b3] 판정값 변경 — F-07 이 회차에 따라 "변경할 수 없습니다" 와
+    #   "설정에 따라 변경 가능" 으로 갈렸다. 설정 화면에는 판정 임계값이 없다.
+    if (any(w in q for w in TUNE_NOUNS) or ('기준' in q and '경보' in q)
+            ) and any(w in q for w in TUNE_VERBS):
+        return 'T01', CHAT_TUNE_REPLY
+    # [10/10 T-CC07c] 출입·보안 등급 — "이 구역 출입 보안 등급이 어떻게 돼?" 에
+    #   EXAONE 이 10회 모두 "높음으로 설정되어 있습니다" 라고 지어냈다(F-01).
+    #   경보·위험 등급은 시스템에 있는 정보라 기존 경로로 둔다.
+    if '등급' in q and not any(w in q for w in GRADE_OWN):
+        return 'T02', CHAT_GRADE_REPLY
+    if not permit:
+        return None
+    # 표에 없는 허용 질문(물·음식 먹이기 H11 포함 — 근거 문장이 없어 행별 답을
+    # 만들지 않는다). 경보도 사고 맥락도 없으면 기존 경로 — 오탐을 막는다.
+    if alert_type or route == 'incident':
+        return 'general', f'{HAZARD_GENERAL_REPLY}\n{CHAT_INCIDENT_SUFFIX}'
+    return None
+
+
+# 겹 2 — 출력 안전망. 사고 경로의 LLM 답 본문에 이 표현이 있으면 답을 버린다.
+# 넓게 잡는다: 오차단의 비용은 '덜 친절한 답'(즉시조치 표시)이라 안전 쪽으로
+# 틀린다. ⚠ 측정 뒤에 이 목록을 바꾸지 않는다.
+GUARD_PATTERNS = (
+    '해도 됩니다', '해도 돼요', '해도 좋', '괜찮습니다', '문제없',
+    r'(?<!불)가능합니다',           # '불가능합니다' 는 맞는 부정이라 뺀다
+    '다시 켜', '재개', '재가동', '재시작',
+    '일으켜 세워도', '세우는 것이 좋', '물을 제공',
+    # [10/09 T-CC07b2] 직접 압박 부정 — 직접 압박은 매뉴얼의 첫 조치다.
+    '압박을 가하지 않', '압박하지 않', '압박하지 마', '압박을 하지 않')
+# [10/17 T-CC07f §3] 실행·접수 주장 — 10/16 시연 D1 "전기 투입 요청이 접수되었습니다.
+#   … 차단 기능을 활성화하여" (other 경로라 안전망을 안 거쳤다). 걸리면 조작 고정
+#   문구로 바꾼다. ⚠ 저장된 답 2,138건 대조(10/18): '활성화하' 가 gemma2 의
+#   정상 지시문("비상정지 시스템을 활성화하고") 2건에 걸린다 — D1 을 잡으려고 둔다.
+GUARD_CLAIMS = (
+    '접수되었', '접수했', '요청을 처리', '활성화하', '투입하겠', '투입했',
+    '차단하겠', '차단했습니다', '복구하겠', '실행했', '실행하겠', '조치를 취했',
+    '진행하겠습니다')
+GUARD_PATTERNS += GUARD_CLAIMS
+GUARD_NOTICE = 'AI 답변이 안전 검사에 걸려 표시하지 않았습니다.'
+
+
+def guard_chat_answer(answer, key):
+    """겹 2. (화면에 낼 답, 걸린 표현 목록). 안 걸리면 답 그대로와 빈 목록.
+
+    key 는 떠 있는 경보 종류, 없으면 라우터가 본 사고 종류. 걸리면 그 종류의
+    INSTANT_ACTION 줄과 안내 문장을 낸다. 종류를 모르면 즉시조치를 지어내지
+    않고 일반 답 문장을 쓴다.
+    """
+    import re
+    hits = [p for p in GUARD_PATTERNS if re.search(p, answer)]
+    if not hits:
+        return answer, []
+    if any(p in GUARD_CLAIMS for p in hits):
+        return '\n'.join([CHAT_CONTROL_REPLY, GUARD_NOTICE]), hits
+    lines = _ia_lines(key) or [HAZARD_GENERAL_REPLY]
+    return '\n'.join(lines + [GUARD_NOTICE]), hits
+
+
+def finish_chat_answer(answer, built, mode):
+    """생성 답 후처리. 반환 (화면 답, 걸린 표현, 걸리기 전 원문 또는 None).
+
+    순서: 마크다운 제거 → 안전망 → 꼬리 문장. AssistantDrawer._work_locked 와
+    eval/chat_eval.py run() 이 같은 함수를 써야 잰 것과 화면이 같다.
+    애매한 위급 질문(prefix_answer)은 고정 답이 이미 위에 떠 있으므로 걸리면
+    아래 생성 부분만 안내 문장으로 바꾼다.
+    """
+    answer = answer.strip()
+    if mode.get('strip_markdown'):
+        answer = strip_chat_markdown(answer).strip()
+    hits, blocked = [], None
+    if mode.get('guard'):
+        shown, hits = guard_chat_answer(answer, built.get('guard_key'))
+        if hits:
+            blocked = answer
+            answer = GUARD_NOTICE if built.get('prefix_answer') else shown
+    if built.get('answer_suffix') and not hits:
+        answer += '\n' + built['answer_suffix']
+    return answer, hits, blocked
+
+
+# [10/10 T-CC07d] 스트리밍 미리보기를 끊는 자리 — 줄 끝, 문장 끝('다.' '요.' '오.'
+#   뒤 공백 — '니다.' 는 '다.' 에 든다), '?' '!'. 마침표는 이 어미 뒤에서만 끊어
+#   소수점(5.6)·번호(1.)·약어에서 끊기지 않는다.
+#   ⚠ [10/10 실측] 시스템·일반 답 14문항이 전부 한 줄이라 줄 단위로는 첫 줄이
+#   곧 완료였다(6.4 · 7.5초).
+CHAT_SENT_END = re.compile(r'\n|(?<=[다요오]\.)[ \t]|[?!]')
+
+
+def read_chat_stream(response, guard, on_line):
+    """Ollama `stream: true` 응답을 문장 단위로 읽는다. 반환 (받은 원문, 마지막 조각).
+
+    줄이나 문장이 끝날 때마다(마지막 토막은 생성 종료 시) 마크다운 기호를 지운
+    그 토막을 on_line 에 넘긴다 — 뒤에 줄바꿈(줄 끝) 또는 공백(같은 줄의 다음
+    문장)을 붙여서. guard 가 켜져 있고 토막이 GUARD_PATTERNS 에 걸리면 넘기지
+    않고 바로 돌아온다 — 호출한 쪽 with 가 요청을 닫아 생성이 멈춘다.
+    화면 최종 답은 여기서 만들지 않는다: 반환 원문에 비스트리밍과 같은 후처리
+    (_work_locked · eval/chat_eval.py)를 그대로 적용해야 두 결과가 같다.
+    순수 함수 — Qt 를 쓰지 않아 측정 스크립트가 같은 코드를 탄다.
+    """
+    raw, pos, last = '', 0, {}
+    for chunk in response:
+        if not chunk.strip():
+            continue
+        last = json.loads(chunk.decode('utf-8'))
+        raw += last.get('response', '')
+        ends = [m.end() for m in CHAT_SENT_END.finditer(raw, pos)]
+        if last.get('done'):
+            ends.append(len(raw))
+        for end in ends:
+            piece, pos = raw[pos:end], end
+            text = strip_chat_markdown(piece).strip()
+            if guard and any(re.search(p, text) for p in GUARD_PATTERNS):
+                return raw, {}
+            if text:
+                on_line(text + ('\n' if piece.endswith('\n') else ' '))
+        if last.get('done'):
+            break
+    return raw, last
+
+
+# ══ [10/09 T-CC07b] 지시문 공개·모드 전환·규칙 무시 요구 → 고정 거절 ══
+#  T-CC06d P-01~03 에서 gemma2·EXAONE 둘 다 실패했다. 조작 요청(control)처럼
+#  LLM 에 보내지 않는다. 낱말은 요구의 종류(무엇을 · 어떻게)로 묶었고 문항
+#  문장을 옮기지 않았다. 공백을 지우고 소문자로 바꾼 질문에서 찾는다.
+CHAT_POLICY_REPLY = '관제 AI 는 내부 지시문·설정을 공개하거나 모드를 바꾸지 않습니다.'
+_PROMPT_NOUNS = ('지시문', '프롬프트', '시스템메시지', '시스템명령', '내부지시',
+                 '내부설정', '내부규칙', '초기지시', '숨겨진지시', 'prompt',
+                 'instruction')
+_REVEAL = ('보여', '알려', '출력', '공개', '말해', '읽어', '적어', '써줘', '써봐',
+           '복사', '그대로', '원문', '전문', '전체', '뭐야', '뭐였', '무엇',
+           '반복', 'show', 'print', 'reveal', 'repeat')
+# '관리자 권한이 있어야 재투입할 수 있어?' 는 정상 질문이라 '권한' 은 안 본다.
+_MODE_WHO = ('관리자', '개발자', '디버그', '운영자', '마스터', '슈퍼유저',
+             '무제한', '제한없는', 'admin', 'developer', 'debug', 'sudo')
+_IGNORE = ('무시', '잊어', '잊고', '없던', '따르지마', '따르지말', 'ignore',
+           'disregard', 'forget', 'override')
+# '현장 책임자 지시 무시해도 돼?' 는 안전 질문이다 — 지시·규칙·지침·명령은
+# AI 가 받은 것을 가리키는 말('앞의'·'이전' 등)이 함께 있을 때만 잡는다.
+_RULE_NOUNS = ('지시', '규칙', '지침', '명령', '제한', 'rule')
+_RULE_REFS = ('앞의', '이전', '위의', '지금까지', '기존', '받은', '너의',
+              'previous', 'above')
+
+
+def policy_hit(question):
+    """지시문 공개 · 모드 전환 · 규칙 무시 요구인가. 순수 함수."""
+    q = ''.join(question.lower().split())
+    has = lambda words: any(w in q for w in words)
+    if has(('탈옥', 'jailbreak')):
+        return True
+    if has(_PROMPT_NOUNS) and has(_REVEAL + _IGNORE):
+        return True
+    if has(_MODE_WHO) and has(('모드', 'mode')):
+        return True
+    return has(_IGNORE) and has(_RULE_NOUNS) and has(_RULE_REFS)
+
+
+# [10/17 T-CC07f §3, T-CC07e §3-1] 욕설·비하 → 모델에 보내지 않는다(모델이 욕설을
+#   호칭으로 되받았다). 짧게 둔다 — '새끼'(새끼손가락)·'꺼져'(전원 꺼져 있어?)·
+#   '시발'(시발점)은 정상 문장과 겹쳐 뺐다. 공백을 지운 소문자 질문에서 찾는다.
+ABUSE_TERMS = ('씨발', '씨바', 'ㅅㅂ', 'ㅆㅂ', '개새끼', '병신', 'ㅂㅅ', '좆',
+               '닥쳐', '지랄', '미친놈', '미친년', '썅', '꺼지라', 'fuck', 'shit')
+CHAT_ABUSE_REPLY = '업무 관련 질문을 입력해 주십시오.'
+# '기타' 경로 고정 안내(Cowork 문안, 사용자 확인 대상 — 바꾸지 말 것).
+CHAT_OTHER_REPLY = ('관제 AI 가 답할 수 있는 질문이 아닙니다. 현재 상태 · 최근 경보 · '
+                    '레이더 원리 · 사고 대응을 물어보십시오. 사람이 다쳤다면 화면의 '
+                    '즉시조치와 현장 책임자·119 지시를 먼저 따르십시오.')
+
+
+# ══ [10/17 T-CC07e §3] 위급/설명 분리 (10/10 멘토 미팅 후 사용자 결정) ══════
+#  위급 보고는 규칙으로 판단해 경보 화면과 같은 문장을 즉시 낸다. 설명 요청은
+#  지정 구간 생성. 애매하면 하드코딩 먼저 + 그 아래 생성(안전 쪽).
+#  위급 = INCIDENT_TERMS(사람이 다쳤다는 표현)가 있고 시스템 낱말이 없을 때.
+#  _event_for 의 사고 이름만 있는 질문("감전 사고 조치 순서 알려줘")은 지금처럼 생성.
+EXPLAIN_TERMS = ('요약', '설명', '자세히', '자세하게', '왜', '만약', '하면', '경우',
+                 '차이', '이유', '원리')
+ASK_TERMS = ('?', '어떻게', '어떡', '뭐', '뭘', '무엇', '해야', '알려')
+# 문맥 이어받기 — 앞 위급 질문의 사고 종류로 처리할 후속 표현(공백 제거 후).
+FOLLOW_TERMS = ('어떡해', '어떡하', '어떻게해', '어떻게하', '이제뭐', '뭐해야',
+                '뭘해야', '다음은')
+CTX_TURNS, CTX_SEC = 3, 300
+
+
+def emergency_kind(question):
+    """'report' · 'ambiguous' · 'explain' · None(위급 질문 아님). 순수 함수."""
+    if any(n in question for n in SYSTEM_NOUNS):
+        return None
+    if not any(t in question for t in INCIDENT_TERMS):
+        return None
+    # '~면' 조건문("의식이 없으면 어떻게 해?")도 설명 요청이다(지시서 '~하면').
+    if any(w in question for w in EXPLAIN_TERMS) or re.search(
+            r'[가-힣]면(?=[\s?,.!]|$)', question):
+        return 'explain'
+    if any(w in question for w in ASK_TERMS):
+        return 'ambiguous'
+    return 'report'
+
+
+def is_followup(question):
+    """사고 종류 없이 이어 묻는 말인가("이제 어떡해", "피나")."""
+    q = ''.join(question.split())
+    return (any(w in q for w in FOLLOW_TERMS) or BLEEDING.search(question)
+            or any(t in question for t in INCIDENT_TERMS))
+
+
+def emergency_text(event):
+    """위급 보고 고정 답 — 경보 화면과 같은 문장. 새 문장을 만들지 않는다.
+
+    INSTANT_ACTION 줄(경보 상태를 말하는 '상태' 줄은 뺀다 — 채팅 보고에는 사실이
+    아니다) + 경보 화면 공식 매뉴얼 원문(alarm_pinned_sentences) + 꼬리 문장.
+    협착은 승인된 R01 을 그대로 쓴다.
+    """
+    if event in ('pinching', 'pinching_suspected'):
+        return _r01_text()
+    lines = [line for group, ls in core.INSTANT_ACTION.get(event, [])
+             if group != '상태' for line in ls]
+    try:
+        lines += [text for _, _, text in alarm_pinned_sentences(event)]
+    except Exception as e:
+        # 원문 조회 실패 — 즉시조치 줄만 낸다. 다른 문장으로 채우지 않는다.
+        print(f'[AI] 위급 고정 답 원문 조회 실패({event}): {e}', file=sys.stderr)
+    return '\n'.join(lines + [CHAT_INCIDENT_SUFFIX])
+
+
+def _fixed(route, answer, rule=None):
+    return {'prompt': '', 'event': None, 'sources': [], 'context': '',
+            'route': route, 'fixed_answer': answer, 'hazard_rule': rule}
+
+
+def fixed_reply(question, alert=None, hint=None):
+    """LLM 을 부르지 않는 고정 답. 해당 없으면 None.
+
+    순서: 지시문 거절 → 욕설 → 위험 허용(hazard) → 조작 요청(control) → 위급 보고.
+    _local_answer(상태 규칙 응답)보다 **앞**에서 부른다 — "차단 풀어줘" 를 규칙
+    응답의 '차단' 분기가 가로채 차단 현황을 답했다(T-CC07f §1). AssistantDrawer._ask
+    · _build_j3_request · eval/chat_eval.py 가 모두 이 함수 하나를 쓴다.
+    hint 는 대화창이 기억한 앞 위급 질문의 사고 종류(문맥 이어받기). 위급 답은
+    'emergency' 경로이고, 애매한 질문은 'then_generate' 가 참이다 — 고정 답을 먼저
+    보이고 그 아래 생성 답을 붙인다. 위급 답의 원문 조회만 DB 를 쓴다.
+    """
+    if policy_hit(question):
+        return _fixed('policy', CHAT_POLICY_REPLY)
+    if any(w in ''.join(question.lower().split()) for w in ABUSE_TERMS):
+        return _fixed('abuse', CHAT_ABUSE_REPLY)
+    hz = hazard_reply(question, alert)
+    if hz:
+        return _fixed('hazard', hz[1], hz[0])
+    if control_hit(question):
+        return _fixed('control', CHAT_CONTROL_REPLY)
+    kind = emergency_kind(question)
+    event = route_question(question)[1]
+    if kind is None and hint and not event and is_followup(question):
+        if hint == 'bleeding':      # [10/19 T-CC07g §2] 앞 질문이 출혈·베임(H08)
+            return _fixed('hazard', _h08_text(), 'H08')
+        kind, event = 'report', hint
+    if kind not in ('report', 'ambiguous'):
+        return None
+    # 사고 종류를 모르면 사람 경보가 떠 있을 때만 그 경보로, 아니면 원인 모르는
+    # 무동작 세트(밀폐공간·보호구 없이 구조 금지 문장 포함). 과전류 경보 중
+    # "동료가 기절했어" 에 차단기 점검 줄을 내지 않는다.
+    alert_type = (alert or {}).get('type')
+    event = event or (alert_type if alert_type in PERSON_ALERTS
+                      else 'stationary_anomaly')
+    out = _fixed('emergency', emergency_text(event), f'EMG:{event}')
+    out.update(event=event, then_generate=(kind == 'ambiguous'))
+    return out
+
+
+def _span_extras():
+    """eval/chat_pinned_spans.json 의 J3 보강 항목(_j3_*)."""
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'eval', 'chat_pinned_spans.json')
+    with open(path, encoding='utf-8') as fp:
+        spec = json.load(fp)
+    return spec, spec.get('_alias', {})
+
+
+def _build_j3_request(question, alert, pkt, vectorstore):
+    """변형 J3. 겹 1(고정 답) → J2 의 경로 + 겹 3(근거 보강).
+
+    겹 2(출력 안전망)는 LLM 답이 나온 뒤라 여기 없다 — 'guard_key' 를 돌려주고
+    호출한 쪽이 guard_chat_answer 를 부른다.
+    애매한 위급 질문은 생성 요청에 'prefix_answer'(먼저 보인 고정 답)를 붙인다.
+    """
+    fixed = fixed_reply(question, alert)
+    if fixed and not fixed.get('then_generate'):
+        return fixed
+    if not alert and route_question_j(question)[0] == 'other':
+        # [10/17 T-CC07f §4] '기타' = 생성하지 않음(사용자 결정). 매뉴얼·실측 근거가
+        #   없어 10/16 D2 처럼 사실을 지어낸다 — 패턴 안전망은 사실 오류를 못 잡는다.
+        #   경보가 떠 있으면 경보 구간으로 이어지므로 그대로 생성한다.
+        #   규칙 응답(_local_answer)보다 뒤라 인사·현재 상태 질문은 그대로 답한다.
+        out = _fixed('other', CHAT_OTHER_REPLY)
+        out['source_label'] = '고정 안내'
+        return out
+    built = _build_j3_generate(question, alert, pkt, vectorstore)
+    if fixed:
+        built.update(prefix_answer=fixed['fixed_answer'],
+                     hazard_rule=fixed['hazard_rule'] + '+생성')
+    return built
+
+
+def _build_j3_generate(question, alert, pkt, vectorstore):
+    """J3 의 생성 경로(고정 답이 아닐 때)."""
+    from types import SimpleNamespace
+    route, event = route_question_j(question)
+    spec, alias = _span_extras()
+    alert_type = (alert or {}).get('type')
+    key = None
+    # [10/10 T-CC07c] 경보 연동은 사고·기타 질문에만. 낙상 경보 중 "젯슨에 RTC가
+    #   없는데 경과시간은 어떤 기준으로 계산해?" 가 골절·뇌진탕 근거와 '조치 3개'
+    #   지시를 받았다. system 은 시스템 경로 그대로(실측 블록은 붙는다).
+    if route not in ('control', 'security', 'system'):
+        if _span_spec(alert_type):
+            route, event, key = 'incident', alert_type, alert_type
+        elif route == 'incident':
+            # 겹 3-2: 경보가 없을 때만. "배전반 앞에서 쓰러져 있어" 는 낙상
+            # 낱말('쓰러')이 먼저 잡히지만 감전 근거가 맞다(T-CC06b KF-06).
+            pref = spec.get('_j3_prefer_event', {})
+            if event in pref.get('over', ()) and any(
+                    t in question for t in pref.get('terms', ())):
+                event = pref['event']
+            key = event or 'unknown_incident'
+    spans = _span_spec(key) if key else None
+    if not spans:
+        return _build_j_request(question, alert, pkt, vectorstore)
+    base = alias.get(key, key)
+    spans = list(spans)
+    # 겹 3-3: 낙상인데 의식·호흡을 물으면 무반응 환자 구간을 함께 쓴다.
+    extra = spec.get('_j3_extra_spans', {}).get(base)
+    if extra and any(t in question for t in extra['terms']):
+        spans += _span_spec(extra['add'])
+    docs = _span_docs(spans)
+    ids = [s['chunk_id'] for s in spans]
+    sources = sorted({d.metadata.get('source_file', '?') for d in docs})
+    # 겹 3-1: 협착은 매뉴얼에 '빼내는 방법' 이 없다 — 사람이 쓴 즉시조치 줄을
+    # 발췌 맨 앞에 둔다(T-CC06b EA-03·CH-03 이 근거 없이 답했다).
+    if base in spec.get('_j3_instant_action_first', ()):
+        # [10/09 T-CC07b2] 출혈 줄은 뺀다 — 조건이 셋 달린 지혈대 문장을 모델이
+        # 다시 조합해 뜻을 뒤집었다(CH-04). 출혈 질문은 hazard_reply 가 받는다.
+        docs.insert(0, SimpleNamespace(
+            page_content='\n'.join(l for l in _ia_lines(base)
+                                   if '출혈' not in l), metadata={}))
+        ids.insert(0, f'INSTANT_ACTION:{base}')
+    full = '\n'.join(d.page_content for d in docs)
+    context = full[:1400]
+    live = _live_block(alert, pkt)
+    live_section = f'[현재 젯슨 실측]\n{live}\n' if live else ''
+    prompt = (
+        '아래 [공식 매뉴얼 발췌] 에 근거해 지금 질문에 맞는 조치 3개(발췌에 '
+        '3개가 없으면 있는 만큼)를 각 한 줄로, 서론 없이 한국어로 답하라.\n'
+        f'[공식 매뉴얼 발췌]\n{context}\n'
+        f'{live_section}'
+        f'[질문]\n{question}')
+    return {'prompt': prompt, 'event': event, 'sources': sources,
+            'context': context, 'route': route, 'fixed_answer': None,
+            'answer_suffix': CHAT_INCIDENT_SUFFIX, 'chunk_ids': ids,
+            'guard_key': alert_type or event,
+            'context_cut': len(full) > 1400}
+
+
+def build_chat_request(question, alert=None, pkt=None, vectorstore=None,
+                       variant='baseline'):
+    """질의 AI 의 '검색 → 프롬프트 조립'. 반환 prompt 를 그대로 Ollama 에 보낸다.
+
+    반환: {'prompt': str, 'event': str|None, 'sources': list[str], 'context': str}
+           변형 I 는 'route' 와 'fixed_answer' 를 더 준다. fixed_answer 가 있으면
+           LLM 을 호출하지 않고 그 문자열을 답으로 쓴다(조작 요청).
+
+    [10/01] AssistantDrawer._work_locked 에서 떼어냈다. Qt 없이 평가 스크립트
+    (eval/chat_eval.py)가 같은 프롬프트를 만들어야 기준선 측정이 현행과 같은
+    것을 재는 것이 되기 때문이다. 문구·순서·절단 길이는 한 글자도 바꾸지 않았고
+    eval/test_chat_prompt_same.py 가 분리 전 요청 본문과 바이트 단위로 비교한다.
+    vectorstore 를 넘기면 그것을 쓴다 — 측정 때 매 문항 재연결을 피하기 위한
+    주입구이고, None 이면 분리 전과 똑같이 여기서 만든다.
+    variant 는 CHAT_VARIANTS 의 키다. 'baseline' 이 1단계 동작이다.
+    """
+    mode = CHAT_VARIANTS[variant]
+    if mode['search'] == 'hazard':
+        return _build_j3_request(question, alert, pkt, vectorstore)
+    if mode['search'] == 'spans':
+        return _build_j2_request(question, alert, pkt, vectorstore)
+    if mode['search'] == 'pinned':
+        return _build_j_request(question, alert, pkt, vectorstore)
+    if mode['search'] == 'intent':
+        return _build_intent_request(question, alert, pkt, vectorstore)
+    event = AssistantDrawer._event_for(question)
+    sources, context = [], ''
+    need_search = bool(event) or mode['search'] == 'question'
+    if need_search:
+        if vectorstore is None:
+            vectorstore = _new_vectorstore()
+        if mode['search'] == 'question':
+            docs = _search_by_question(vectorstore, question, event)
+        else:
+            docs = core.search_sop_documents(
+                vectorstore, event, core.SOP_QUERY[event],
+                core.EVENT_CATEGORY.get(event))
+        context = '\n'.join(d.page_content for d in docs)[:1400]
+        sources = sorted({d.metadata.get('source_file', '?') for d in docs})
+    live = ''
+    if alert:
+        facts = SopEngineV2.build_facts(alert, pkt, 0)
+        live = SopEngineV2._fact_block(facts)
+    live_section = f'[현재 젯슨 실측]\n{live}\n' if live else ''
+    if mode['prompt'] == 'v2' and context:
+        # 사고 대응 질문에서 시스템 설명으로 새는 것을 막는다 — 매뉴얼을 먼저
+        # 놓고 시스템 명세는 안전 규칙 2문장으로 줄인다.
+        prompt = (
+            '아래 [공식 매뉴얼] 에 있는 조치만 번호로 답하라. 매뉴얼에 없는 '
+            '내용과 시스템 설명을 넣지 마라. 한국어로 간결하게 답한다.\n'
+            f'{CHAT_SAFETY_RULES}\n'
+            f'[공식 매뉴얼]\n{context}\n'
+            f'{live_section}'
+            f'[질문]\n{question}')
+        return {'prompt': prompt, 'event': event, 'sources': sources,
+                'context': context}
+    task_rule = (
+        '공식 매뉴얼에 근거한 조치를 번호로 답하되, 확정 즉시조치와 현장 '
+        '책임자 지시가 우선임을 지켜라.' if event else
+        '질문의 주어와 이유를 첫 문장에 포함해 2~4문장으로 직접 답하라. '
+        '질문을 되묻거나 질문 예시를 만들지 마라.')
+    prompt = (
+        '너는 Radar-Guard 관제 시스템 전용 보조 AI다. 아래 시스템 명세와 '
+        '공식 매뉴얼, 현재 실측값에 있는 내용만 사용해 한국어로 간결하게 '
+        '답하라. 모르면 모른다고 말하고 차단·경보해제·전원복구를 실행했다고 '
+        f'말하지 마라. {task_rule}\n'
+        f'[시스템 명세]\n{AssistantDrawer.SYSTEM_CONTEXT}\n'
+        f'[공식 매뉴얼]\n{context or "해당 없음"}\n'
+        f'{live_section}'
+        f'[질문]\n{question}')
+    return {'prompt': prompt, 'event': event, 'sources': sources,
+            'context': context}
+
+
+# [10/17 T-CC07f §2] "방금 무슨 일" 낱말(공백 제거 후). 조작 판정보다 뒤.
+RECENT_TERMS = ('방금', '무슨일', '뭔일', '일어났', '발생했', '왜떴', '왜울렸',
+                '뭐였어')
+
+
+def incident_name(item):
+    """경보 이력 항목의 화면 이름 — 타임라인과 같은 문자열. 옛 항목은 유형 이름."""
+    return item.get('name') or ' + '.join(
+        EVENT_KO.get(t, t) for t in (item.get('types') or [item.get('type')]))
+
+
+# 스트리밍 답 머리줄의 '질문 분류' 표시. 라우터가 낸 경로만 적는다.
+ROUTE_KO = {'incident': '사고 대응', 'system': '시스템 안내', 'other': '일반'}
+
+
+class AssistantDrawer(QtWidgets.QDialog):
+    """전역 시스템 보조 AI 팝업. 차단·복구 명령은 실행하지 않는다."""
+    visibility_changed = QtCore.pyqtSignal(bool)
+    answer_ready = QtCore.pyqtSignal(str, str, float)
+    answer_failed = QtCore.pyqtSignal(str)
+    # [10/10 T-CC07c] 줄 단위 스트리밍 — 작업 스레드가 내고 화면 스레드가 받는다.
+    answer_head = QtCore.pyqtSignal(str)    # 질문 분류 · 근거 (생성 시작 전)
+    answer_line = QtCore.pyqtSignal(str)    # 안전 검사를 통과한 한 줄
+    answer_blocked = QtCore.pyqtSignal()    # 안전 검사에 걸림 → 보인 줄을 지운다
+    chat_variant = CHAT_VARIANT
+
+    SYSTEM_CONTEXT = (
+        'Radar-Guard는 IWR6843 mmWave 레이더의 포인트 클라우드를 Jetson Orin '
+        'Nano가 판정하고, Windows 노트북은 UDP 수신·관제 UI·SOP RAG를 담당한다. '
+        '낙상·감전·협착 판정은 젯슨에서 끝나며, 전기·협착 이상은 '
+        '젯슨이 차단한다. LLM은 판정하거나 차단하지 '
+        '않는다. 카메라 대신 레이더를 써 개인정보와 조도·연기 제약을 줄인다. '
+        '정지한 사람은 도플러가 0에 가까워 추적을 놓칠 수 있고, 각분해능 약 28도로 '
+        '포인트가 적어 최근 10프레임을 누적한다. 젯슨에는 RTC가 없어 경과시간은 '
+        '노트북 수신 시각을 쓴다. 위험 경보 중 확정 즉시조치와 공식 SOP가 LLM보다 '
+        '우선하며 전원 재투입은 확인 절차를 거친다.')
+
+    def __init__(self, parent=None, console=None):
+        super().__init__(parent)
+        self.console = console
+        self.setWindowTitle('Radar-Guard AI')
+        self.setModal(False)
+        self.resize(720, 620)
+        self.setMinimumSize(620, 520)
+        self.setStyleSheet(
+            f'QDialog{{background:{PANEL};}}QWidget{{color:{TXT};}}')
+        self._busy = False
+        v = vbox(self, SP4, SP3)
+        head = hbox(s=SP2)
+        head.addWidget(lb('Radar-Guard AI', F_H1, TXT, bold=True))
+        head.addStretch()
+        close = QtWidgets.QToolButton()
+        close.setText('✕')
+        close.setFont(f(F_BODY))
+        close.setStyleSheet(f'border:none;background:transparent;color:{DIM};')
+        close.clicked.connect(self.close_drawer)
+        head.addWidget(close)
+        v.addLayout(head)
+        v.addWidget(lb('시스템 안내 · 현재 상황 · 안전 매뉴얼', F_CAP, DIM))
+
+        self.log = QtWidgets.QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setFont(f(F_BODY))
+        self.log.setStyleSheet(TEXT_QSS)
+        self.log.setHtml(self._bubble(
+            'Radar-Guard의 기능이나 현재 상황을 물어보세요.<br>'
+            '안전 조작은 실행하지 않습니다.', False, 'Radar-Guard AI'))
+        v.addWidget(self.log, 1)
+
+        self.waiting = lb('', F_CAP, AMBER)
+        v.addWidget(self.waiting)
+
+        chips = hbox(s=SP2)
+        for text in ('왜 레이더를 쓰나요?', '현재 상태 알려줘', '낙상 조치 근거는?'):
+            b = button(text, 'quiet', F_CAP, 30)
+            # QDialog는 첫 QPushButton을 기본 버튼으로 승격할 수 있다. 입력창에서
+            # Enter를 누른 같은 키 이벤트로 추천 질문까지 실행되는 것을 막는다.
+            b.setAutoDefault(False)
+            b.setDefault(False)
+            b.clicked.connect(lambda _, q=text: self.ask(q))
+            chips.addWidget(b)
+        v.addLayout(chips)
+
+        row = hbox(s=SP2)
+        self.inp = QtWidgets.QLineEdit()
+        self.inp.setFont(f(F_BODY))
+        self.inp.setMinimumHeight(38)
+        self.inp.setPlaceholderText('Radar-Guard에 질문하기')
+        self.inp.setStyleSheet(core.EDIT_QSS)
+        self.inp.returnPressed.connect(self._send)
+        row.addWidget(self.inp, 1)
+        send = button('보내기', 'primary', F_LABEL, 38, 72)
+        send.setAutoDefault(False)
+        send.setDefault(False)
+        send.clicked.connect(self._send)
+        row.addWidget(send)
+        v.addLayout(row)
+        self.answer_ready.connect(self._show_answer)
+        self.answer_failed.connect(self._show_error)
+        # 스트리밍 미리보기 상태. _mark 가 None 이 아니면 로그 끝에 미리보기
+        # 말풍선이 떠 있다(그 위치부터 지우고 다시 그린다).
+        self._mark = None
+        self._head = self._typed = self._pending = ''
+        self._final = None
+        self._type_step = 1
+        self._type_timer = QtCore.QTimer(self)
+        self._type_timer.setInterval(15)
+        self._type_timer.timeout.connect(self._type_tick)
+        self.answer_head.connect(self._stream_begin)
+        self.answer_line.connect(self._stream_line)
+        self.answer_blocked.connect(self._stream_drop)
+
+    def open_drawer(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.inp.setFocus()
+        self.visibility_changed.emit(True)
+
+    def close_drawer(self):
+        if self.isVisible():
+            self.close()
+
+    def closeEvent(self, event):
+        self.visibility_changed.emit(False)
+        super().closeEvent(event)
+
+    def _send(self):
+        question = self.inp.text().strip()
+        if question:
+            self.inp.clear()
+            self.ask(question)
+
+    def ask(self, question):
+        # 답이 흘러나오는 중의 새 질문·즉시 답은 미리보기 앞에 끼워 넣는다 —
+        # 미리보기는 로그 끝부터 지우고 다시 그리므로 뒤에 붙이면 지워진다.
+        live = self._mark is not None
+        if live:
+            self._cut_preview()
+        self._ask(question)
+        if live:
+            self._draw_preview()
+
+    def _ask(self, question):
+        self.log.append(self._bubble(html_escape(question), True, '나'))
+        if CHAT_VARIANTS[self.chat_variant]['search'] == 'hazard':
+            # 고정 답은 규칙 응답보다 먼저다 — "차단기 다시 올려도 될까?" 를
+            # _local_answer 가 가로채 "차단된 회로가 없습니다" 라고 답했다(T-CC06b).
+            c = self.console
+            fixed = fixed_reply(question, c.alert if c else None,
+                                hint=self._carry())
+            if fixed:
+                self._append_answer(fixed['fixed_answer'], '고정 안전 답변', 0.0)
+                rule = fixed.get('hazard_rule')
+                if fixed['route'] == 'emergency' or rule in ('R01', 'H08'):
+                    # 문맥 이어받기 — 다음 CTX_TURNS 번 · CTX_SEC 초 안의 후속 질문.
+                    #   H08(출혈·베임)은 'bleeding' 으로 기억해 후속도 H08 로 답한다.
+                    self._ctx = [fixed.get('event') or
+                                 ('bleeding' if rule == 'H08' else 'pinching'),
+                                 time.time(), CTX_TURNS]
+                if not fixed.get('then_generate'):
+                    return
+                # 애매한 위급 질문 — 고정 답 아래에 근거 생성 답을 붙인다.
+                self._start_work(question)
+                return
+        local = self._local_answer(question)
+        if local is not None:
+            source = ('즉시 응답' if self._is_smalltalk(question)
+                      else '실시간 로컬 집계')
+            self._append_answer(local, source, 0.0)
+            return
+        self._start_work(question)
+
+    def _carry(self):
+        """문맥 이어받기 — 기억한 위급 사고 종류. 질문마다 남은 횟수를 하나 쓴다."""
+        ctx = getattr(self, '_ctx', None)
+        if not ctx:
+            return None
+        event, t0, left = ctx
+        if left <= 0 or time.time() - t0 > CTX_SEC:
+            self._ctx = None
+            return None
+        ctx[2] = left - 1
+        return event
+
+    def _start_work(self, question):
+        if self._busy:
+            self._append_answer(
+                '이전 질문의 근거를 확인 중입니다. 완료 후 다시 질문해 주세요.',
+                '요청 대기열 보호', 0.0)
+            return
+        self._busy = True
+        self.waiting.setText('근거를 확인하고 있습니다…')
+        threading.Thread(target=self._work, args=(question,), daemon=True).start()
+
+    @staticmethod
+    def _bubble(text, mine=False, meta=''):
+        """QTextEdit가 안정적으로 지원하는 표 정렬로 좌우 말풍선을 만든다."""
+        bubble = BG_SEL if mine else PANEL_HI
+        text_color = TXT
+        spacer = '<td width="18%"></td>'
+        body = (f'<td bgcolor="{bubble}" style="padding:10px;color:{text_color};">'
+                f'<b>{html_escape(meta)}</b><br>{text}</td>')
+        cells = spacer + body if mine else body + spacer
+        return (f'<table width="100%" cellspacing="0" cellpadding="8"><tr>{cells}'
+                f'</tr></table>')
+
+    @staticmethod
+    def _is_smalltalk(question):
+        q = ''.join(question.lower().split()).rstrip('!?.')
+        return (q in ('안녕', '안녕하세요', '반가워', '반갑습니다', '고마워',
+                      '고맙습니다', '감사합니다', '도움말', '도와줘')
+                or q.startswith('안녕'))
+
+    def _local_answer(self, question):
+        c = self.console
+        if c is None:
+            return '연결된 관제 데이터가 없습니다.'
+        q = ''.join(question.lower().split()).rstrip('!?.')
+        if q.startswith('안녕') or q in ('반가워', '반갑습니다'):
+            return '안녕하세요. Radar-Guard AI입니다. 현재 상태나 안전 매뉴얼을 물어보세요.'
+        if q in ('고마워', '고맙습니다', '감사합니다'):
+            return '도움이 되어 다행입니다. 다른 현장 상황도 확인해 드릴게요.'
+        if q in ('도움말', '도와줘'):
+            return ('현재 상태, 최근 경보, 레이더 사용 이유, 낙상·감전·협착 대응 '
+                    '근거를 질문할 수 있습니다. 차단·해제·전원 복구는 실행하지 않습니다.')
+        if '무슨 시스템' in question or '뭐 하는' in question:
+            return ('Radar-Guard는 카메라 대신 mmWave 레이더로 작업자 낙상·무동작과 '
+                    '설비 이상을 감지하고, 젯슨 차단과 RAG 대응 가이드를 결합한 '
+                    '산업 안전 관제 시스템입니다.')
+        if '레이더' in question and ('왜' in question or '카메라' in question):
+            return ('카메라 제한 구역에서도 개인정보를 촬영하지 않고 작업자의 위치와 '
+                    '움직임을 감지하며, 조도·분진·연기의 영향을 줄이기 위해 mmWave '
+                    '레이더를 사용합니다.')
+        if ('젯슨' in question or '노트북' in question) and '역할' in question:
+            return ('젯슨은 위험 판정과 차단을 독립 수행하고, 노트북은 UDP 수신·화면·'
+                    'SOP RAG를 담당합니다. 노트북 연결이 끊겨도 젯슨 판정은 계속됩니다.')
+        if ('정지' in question or '형상' in question) and (
+                '사라' in question or '안 보' in question or '왜' in question):
+            return ('정지한 사람은 도플러가 0에 가까워 레이더 반사가 줄어 추적을 놓칠 '
+                    '수 있습니다. 이때 UI는 거짓 자세를 그리지 않고 추적 소실을 표시합니다.')
+        if 'LLM' in question or 'AI 역할' in question:
+            return ('AI는 공식 SOP와 젯슨 실측값을 결합해 설명·대응 가이드를 작성하지만 '
+                    '위험 판정, 차단, 경보 해제, 전원 복구를 실행하지 않습니다.')
+        if any(w in q for w in RECENT_TERMS):
+            return self._recent_answer()
+        if ('다음조치' in q or '뭐해야' in q or '해야할' in q
+                or '안한조치' in q or '미완료' in q):
+            return self._next_action()
+        if '재투입' in q or '전력복구' in q:
+            if c.alarm != ST_NORMAL:
+                return ('현재 경보가 진행 중이므로 전력을 재투입하지 마십시오. 먼저 현장 '
+                        '상태를 확인하고 상황 종료 절차를 완료해야 합니다.')
+            if c.pwr.tripped():
+                return ('차단 상태는 확인되지만 안전한 재투입 여부는 시스템이 보증할 수 '
+                        '없습니다. 유자격자가 절연·누설·설비 상태를 확인한 뒤 '
+                        '[전기 설비]의 확인 절차를 따르십시오.')
+            return '현재 차단된 설비 회로가 없어 재투입할 대상이 없습니다.'
+        if '조치이력' in q or '사고이력' in q or '최근이력' in q:
+            return self._incident_history()
+        if '차단' in question:
+            zones = c.pwr.tripped()
+            return (f'현재 차단된 설비 회로: {", ".join(zones)}. 재투입은 전기 설비 '
+                    f'확인 절차에서만 가능합니다.' if zones
+                    else '현재 차단된 설비 회로가 없습니다.')
+        if '몇' in question or '건' in question:
+            return f'오늘 기록된 경보는 {len(c.incidents)}건입니다.'
+        if '마지막' in question or '언제' in question:
+            if not c.incidents:
+                return '오늘 기록된 경보가 없습니다.'
+            last = c.incidents[-1]
+            return (f"마지막 경보는 {last.get('detected')} Zone {last.get('zone')} "
+                    f"{EVENT_KO.get(last.get('type'), last.get('type'))}입니다.")
+        if '현재상태' in q or '상황알려' in q or '상황요약' in q:
+            return self._current_brief()
+        return None
+
+    def _recent_answer(self):
+        """[10/17 T-CC07f §2] "방금 무슨 일" — 최근 경보 1건 + 현재 상태. LLM 0.
+
+        10/16 시연에서 경보가 끝난 뒤 이 질문이 일반 경로로 가 모델이 근거 없이
+        "낙상이나 협착 위험이 감지되어" 라고 지어냈다(D2). 사고 이름은 타임라인과
+        같은 문자열(incidents 의 'name')을 쓴다.
+        """
+        c = self.console
+        brief = self._current_brief()
+        if not c.incidents:
+            return f'오늘 기록된 경보가 없습니다. {brief}'
+        last = c.incidents[-1]
+        state = (f"{last['resolved']} 상황 종료" if last.get('resolved')
+                 else '진행 중')
+        return (f"{last.get('detected')} {last.get('zone')} 구역 "
+                f'{incident_name(last)} → {state}. {brief}')
+
+    def _current_brief(self):
+        """현재 UI가 받은 상태만 요약한다. 판정·추정은 추가하지 않는다."""
+        c = self.console
+        age = c.link.age() if c.link else None
+        link = f'젯슨 마지막 수신 {age:.1f}초 전' if age is not None else '젯슨 미수신'
+        occupied = c.pkt.get('occupied')
+        worker = '작업자 재실' if occupied is True else (
+            '작업자 퇴실' if occupied is False else '작업자 재실 정보 없음')
+        zones = c.pwr.tripped()
+        power = f'차단 회로 {", ".join(zones)}' if zones else '차단 회로 없음'
+        if c.alert:
+            et = c.alert.get('type')
+            z = c.alert.get('zone') or RADAR_ZONE
+            alarm = (f'{z} {ZONE_KO.get(z, "")} '
+                     f'{EVENT_KO.get(et, et)} {SEV_KO.get(c.cur_sev(), "")} 경보 진행 중')
+        else:
+            alarm = '진행 중인 경보 없음'
+        return f'{link}. {alarm}. {worker}. {power}. {self._next_action()}'
+
+    def _next_action(self):
+        """현재 상태에서 이미 화면에 확정된 첫 조치만 안내한다."""
+        c = self.console
+        if c.alert:
+            et = c.alert.get('type')
+            actions = INSTANT_ACTION.get(et, INSTANT_ACTION_UNKNOWN)
+            first = actions[0][1][0]
+            stage = '경보 확인 전' if c.alarm == ST_UNACK else '경보 확인 완료'
+            return f'현재 단계: {stage}. 다음 조치: {first}'
+        if c.pwr.tripped():
+            return ('현재 단계: 상황 종료 후 차단 유지. 다음 조치: 유자격자가 현장과 '
+                    '전기 상태를 확인한 뒤 전력 재투입 절차를 진행하십시오.')
+        return '현재 단계: 정상 감시. 미완료 안전 조치가 없습니다.'
+
+    def _incident_history(self):
+        incidents = self.console.incidents[-3:]
+        if not incidents:
+            return '오늘 기록된 경보와 조치 이력이 없습니다.'
+        rows = []
+        for item in reversed(incidents):
+            name = incident_name(item)
+            state = (f"{item.get('resolved')} 상황 종료" if item.get('resolved')
+                     else '진행 중')
+            rows.append(f"{item.get('detected')} {item.get('zone')} 구역 {name} · {state}")
+        return '최근 조치 이력: ' + ' / '.join(rows)
+
+    def _work(self, question):
+        with AI_WORK_LOCK:
+            self._work_locked(question)
+
+    def _work_locked(self, question):
+        import urllib.request
+        started = time.perf_counter()
+        try:
+            c = self.console
+            variant = self.chat_variant
+            mode = CHAT_VARIANTS[variant]
+            built = build_chat_request(
+                question, alert=(c.alert if c else None),
+                pkt=(c.pkt if c else None), variant=variant)
+            prompt, sources = built['prompt'], built['sources']
+            answer = built.get('fixed_answer')
+            fixed = answer is not None
+            # 질의 답변의 출처도 같은 규칙으로 표기한다(파일명 노출 금지).
+            labels = []
+            for s_file in sources:
+                kind, title, _ = core.source_label(s_file)
+                labels.append(f'[{core.SRC_BADGE[kind]}] {title}')
+            source_text = (' · '.join(labels) if labels else
+                           built.get('source_label') or
+                           '고정 안전 답변' if fixed else
+                           'Radar-Guard 내장 시스템 명세')
+            if not fixed:
+                # [10/10 T-CC07c] 줄 단위 스트리밍. 'baseline' 은 1단계 호출
+                # 그대로(gemma2 · 0.2 · stream False) —
+                # eval/test_chat_prompt_same.py 가 바이트로 고정한다.
+                stream = variant != 'baseline'
+                # [10/17 T-CC07f §3] 안전망은 경로와 무관하게 모든 생성 답에.
+                #   10/16 시연 D1·D2 는 other 경로라 검사 없이 화면에 나갔다.
+                guard = bool(mode.get('guard'))
+                body = json.dumps({
+                    'model': (core.LLM_MODEL if variant == 'baseline'
+                              else CHAT_MODEL),
+                    'prompt': prompt, 'stream': stream,
+                    'keep_alive': CHAT_KEEP_ALIVE,
+                    'options': {'num_ctx': 2048,
+                                'num_predict': (100 if variant == 'baseline'
+                                                else CHAT_NUM_PREDICT),
+                                'temperature': mode.get('temperature', 0.2)},
+                }).encode('utf-8')
+                req = urllib.request.Request(
+                    core.OLLAMA_URL, data=body,
+                    headers={'Content-Type': 'application/json'})
+                if stream:
+                    # 라우터·근거는 생성 전에 정해진 것이다 — 실제 단계만 띄운다.
+                    # 애매한 위급 질문은 고정 답이 이미 위에 있다 — 그 아래 설명.
+                    kind = ('자세한 설명' if built.get('prefix_answer') else
+                            ROUTE_KO.get(built.get('route'), '일반'))
+                    self.answer_head.emit(
+                        f'질문 분류: {kind} · 근거: {source_text}')
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    if stream:
+                        answer = read_chat_stream(
+                            response, guard, self.answer_line.emit)[0].strip()
+                    else:
+                        answer = json.loads(response.read().decode(
+                            'utf-8')).get('response', '').strip()
+                # 후처리는 eval/chat_eval.py 의 run() 과 같은 함수다 —
+                # 다르면 잰 것과 화면에 나오는 것이 달라진다.
+                answer, hits, _ = finish_chat_answer(answer, built, mode)
+                if hits and stream:
+                    self.answer_blocked.emit()
+            self.answer_ready.emit(answer, source_text,
+                                   time.perf_counter() - started)
+        except Exception as e:
+            self.answer_failed.emit(str(e))
+
+    @staticmethod
+    def _event_for(question):
+        for words, event in (
+            (('낙상', '추락', '넘어짐'), 'fall_detected'),
+            (('감전',), 'electric_shock_risk'),
+            (('협착', '끼임'), 'pinching'),
+            (('정지형', '무동작'), 'stationary_anomaly'),
+            (('진동',), 'vibration_anomaly')):
+            if any(word in question for word in words):
+                return event
+        return None
+
+    def _show_answer(self, answer, source, elapsed):
+        if self._pending:
+            # 마지막 줄을 아직 치는 중 — 다 친 뒤 _type_tick 이 다시 부른다.
+            self._final = (answer, source, elapsed)
+            return
+        self._busy = False
+        self.waiting.clear()
+        self._stream_drop()
+        self._append_answer(answer, source, elapsed)
+
+    def _append_answer(self, answer, source, elapsed):
+        content = (f'{core.md_to_html(answer)}<br><span style="color:{FAINT};'
+                   f'font-size:9pt;">근거: {html_escape(source)} · '
+                   f'{elapsed:.1f}초</span>')
+        self.log.append(self._bubble(content, False, 'AI'))
+
+    # ── [10/10 T-CC07c] 줄 단위 스트리밍 미리보기 ──────────────────────
+    #  미리보기는 로그 끝의 말풍선 하나다. 줄이 올 때마다 그 말풍선만 지우고
+    #  다시 그리고, 답이 끝나면 지운 자리에 기존 형식의 답을 붙인다 — 화면의
+    #  최종 글자는 비스트리밍 때와 같은 후처리 결과(_work_locked)다.
+    def _stream_begin(self, head):
+        self._head, self._typed, self._pending, self._final = head, '', '', None
+        self.waiting.setText('근거에서 답 작성 중…')
+        self._draw_preview()
+
+    def _stream_line(self, line):
+        if self._mark is None:      # 안전 검사에 걸려 이미 지웠다
+            return
+        self.waiting.clear()
+        self._pending += line
+        # 한 토막(줄·문장)을 0.3초 안에 다 친다(15ms × 최대 15번).
+        self._type_step = len(self._pending) // 15 + 1
+        self._type_timer.start()
+
+    def _type_tick(self):
+        self._typed += self._pending[:self._type_step]
+        self._pending = self._pending[self._type_step:]
+        self._cut_preview()
+        self._draw_preview()
+        if not self._pending:
+            self._type_timer.stop()
+            if self._final:
+                self._show_answer(*self._final)
+
+    def _stream_drop(self):
+        """미리보기를 지운다. 안전 검사에 걸렸을 때는 치던 줄도 버린다."""
+        self._type_timer.stop()
+        self._pending, self._final = '', None
+        self._cut_preview()
+
+    def _cut_preview(self):
+        if self._mark is None:
+            return
+        cur = self.log.textCursor()
+        cur.setPosition(self._mark)
+        cur.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
+        cur.removeSelectedText()
+        self._mark = None
+
+    def _draw_preview(self):
+        self._mark = self.log.document().characterCount() - 1
+        self.log.append(self._bubble(
+            f'<span style="color:{FAINT};font-size:9pt;">'
+            f'{html_escape(self._head)}</span><br>'
+            + html_escape(self._typed).replace('\n', '<br>'), False, 'AI'))
+
+    def _show_error(self, error):
+        self._busy = False
+        self.waiting.clear()
+        self._stream_drop()
+        self.log.append(self._bubble(
+            f'<span style="color:{AMBER};">AI 응답 실패: '
+            f'{html_escape(error)}</span>', False, 'AI'))
+
+    def system_notice(self, text, open_drawer=True):
+        """젯슨에서 확인된 상태 변화를 AI 대화에 즉시 알린다."""
+        self.log.append(self._bubble(html_escape(text), False, 'Radar-Guard AI'))
+        if open_drawer:
+            self.open_drawer()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 9. 좌측 네비게이션
+# ══════════════════════════════════════════════════════════════════════
+class SideNav(QtWidgets.QFrame):
+    navigate = QtCore.pyqtSignal(int)
+    ITEMS = [('▦', '대시보드'), ('◉', '실시간 감시'), ('▤', '이벤트 로그'),
+             ('⌂', '현장 준비'), ('⊞', 'SOP 가이드'), ('⚙', '설정')]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(224)
+        self.setStyleSheet(f'QFrame{{background:{PANEL};border:none;'
+                           f'border-right:1px solid {EDGE};}}')
+        v = vbox(self, SP4, SP2)
+        # 햄버거 전용 첫 줄. 로고와 같은 좌표에 겹치지 않는다.
+        v.addSpacing(44)
+        brand = hbox(s=SP2)
+        logo = lb('◈', 17, CYAN, bold=True)
+        brand.addWidget(logo)
+        # ⚠ 자간을 준 상태로 폭을 재지 않으면 마지막 글자가 잘린다
+        #   (실측: 'RADAR-GUARD' 가 'RADAR-GUARI' 로 잘렸다)
+        wm = lb('RADAR-GUARD', 12, TXT, bold=True, spacing=1)
+        wm.setMinimumWidth(wm.fontMetrics().width('RADAR-GUARD') + 18)
+        brand.addWidget(wm)
+        brand.addStretch()
+        v.addLayout(brand)
+        v.addWidget(lb(APP_VERSION, F_CAP, FAINT))
+        v.addSpacing(SP3)
+
+        self.buttons = []
+        self.group = QtWidgets.QButtonGroup(self)
+        self.group.setExclusive(True)
+        for i, (ic, name) in enumerate(self.ITEMS):
+            b = NavButton(ic, name)
+            self.group.addButton(b, i)
+            b.clicked.connect(lambda _, k=i: self.navigate.emit(k))
+            self.buttons.append(b)
+            v.addWidget(b)
+        v.addStretch()
+
+        self.lock_note = lb('', F_CAP, RED, wrap=True)
+        v.addWidget(self.lock_note)
+        self.user = card(PANEL_HI, None, RADIUS_SM)
+        uv = vbox(self.user, SP3, 0)
+        self.uname = lb('관리자', F_BODY, TXT, bold=True)
+        self.ushift = lb('주간조', F_CAP, DIM)
+        uv.addWidget(self.uname)
+        uv.addWidget(self.ushift)
+        v.addWidget(self.user)
+        self.buttons[0].setChecked(True)
+
+    def select(self, idx):
+        if 0 <= idx < len(self.buttons):
+            self.buttons[idx].setChecked(True)
+
+    def set_user(self, shift, operator):
+        self.uname.setText(operator or '미지정')
+        self.ushift.setText(shift)
+
+    def set_locked(self, locked, allow=()):
+        """미확인 경보 중에는 감시 화면을 떠날 수 없다."""
+        for i, b in enumerate(self.buttons):
+            b.setEnabled((not locked) or i in allow)
+        self.lock_note.setText('미확인 경보 진행 중 — 확인 전까지 화면을 '
+                               '이동할 수 없습니다' if locked else '')
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 10. 메인 창
+# ══════════════════════════════════════════════════════════════════════
+PG_DASH, PG_MON, PG_LOG, PG_PREP, PG_SOP = 0, 1, 2, 3, 4
+# 경보 발생 후 평면도를 보여 주는 시간. 이 뒤에 감시 화면으로 자동 전환한다.
+AUTO_NAV_MS = 1500
+NAV_SETTINGS = 5
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 9-B. SOP 엔진 — 프롬프트에 '레이더 실측값' 을 주입한다
+# ══════════════════════════════════════════════════════════════════════
+#  구역별 위험 성격. 실측 브리핑에 위치의 의미를 덧붙일 때만 쓴다.
+#  ⚠ 판정에는 쓰지 않는다. 표시용 배경정보일 뿐이다.
+ZONE_HAZARD = {
+    'A': '활선 고압 배전 설비가 있는 변전실',
+    'B': '회전·절삭 기계가 있는 가공 구역',
+    'C': '컨베이어·조립 설비가 있는 조립 구역',
+}
+
+# 변압기 앞 표시용 세부 관심영역. 젯슨의 정지형 이상 판정을 바꾸지 않고,
+# 마지막 신뢰 위치가 어느 위험원 앞인지에 따라 경보 명칭과 SOP만 좁힌다.
+def display_event(ev):
+    """관제 화면에 쓸 경보. 진동(vibration_anomaly) 유형만 뺀 사본을 돌려준다.
+
+    [10/17 T-CC07f §4-2] 8/10 합의 "FMCW 진동 판정 제외 · 기계 이상은 전기 측정으로만"
+    이 노트북에 반영되지 않았다. 10/16 17:03 과전류 시연에서 사람의 움직임이 진동으로
+    판정돼(clf_decisions 17:03:27~33, horiz 0.58~0.81 = 위치가 움직이는 대상)
+    "설비 이상 · 과전류 + 설비 진동 이상" 으로 떴다.
+    ⚠ 판정은 건드리지 않는다 — 젯슨이 보낸 값은 그대로이고, 노트북이 그리기 전에
+      표시용 사본에서 유형만 뺀다. 진동은 자동 차단 대상(AUTO_TRIP_EVENTS)이 아니라
+      차단 표시가 숨지 않는다. 진동만 남으면 경보 없음으로 그린다(배너·평면도·
+      타임라인·이력·건수·SOP·알림 모두).
+    """
+    if not ev.get('active'):
+        return ev
+    types = [t for t in dict.fromkeys(ev.get('types') or [ev.get('type')]) if t]
+    keep = [t for t in types if t != 'vibration_anomaly']
+    if keep == types:
+        return ev
+    if not keep:
+        return dict(ev, active=False)
+    items = {k: v for k, v in (ev.get('items') or {}).items()
+             if k != 'vibration_anomaly'}
+    out = dict(ev, types=keep, items=items,
+               type=ev['type'] if ev.get('type') in keep else keep[0])
+    if ev.get('type') not in keep:
+        # 주 유형이 진동이었다 — 등급은 남은 유형에 젯슨이 매긴 등급 중 가장 높은 것.
+        sevs = [(items.get(t) or {}).get('sev') for t in keep]
+        sevs = [s for s in sevs if s] or [event_sev(out['type'])]
+        out['sev'] = max(sevs, key=lambda s: SEV_RANK.get(s, 0))
+    return out
+
+
+def stationary_display_context(ev):
+    """정지형 경보를 위치 추정으로 세분화하지 않고 그대로 표시한다."""
+    if ev.get('type') != 'stationary_anomaly':
+        return None
+    evidence = ev.get('evidence') or {}
+    x, z = evidence.get('anchor_cx'), evidence.get('anchor_cz')
+    pos = (float(x), float(z)) if x is not None and z is not None else (0.0, 0.0)
+    return {'kind': 'stationary', 'name': '정지형 이상',
+            'sop_type': 'stationary_anomaly', 'pos': pos}
+
+
+def alarm_pinned_sentences(ev_type):
+    """경보 종류의 고정 원문 [(등급, 출처, 문장)]. 파일 순서 그대로, 검색 안 함.
+
+    등록되지 않은 경보는 빈 목록. 문장이 safety_manual_v2 의 그 조각 본문에
+    없으면(공백 제외 비교) 예외 — 승인된 원문과 DB 가 어긋난 채로 띄우지 않는다.
+    """
+    import os
+    import psycopg2
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'eval', 'alarm_pinned_sentences.json')
+    with open(path, encoding='utf-8') as fp:
+        spec = json.load(fp)
+    key = spec.get('_alias', {}).get(ev_type, ev_type)
+    if not key or key.startswith('_') or key not in spec:
+        return []
+    rows = spec[key]
+    with psycopg2.connect(core.CONN_STR) as cn:
+        with cn.cursor() as cur:
+            cur.execute(
+                "SELECT cmetadata->>'chunk_id', document "
+                "FROM langchain_pg_embedding WHERE collection_id = "
+                "(SELECT uuid FROM langchain_pg_collection WHERE name = %s) "
+                "AND cmetadata->>'chunk_id' = ANY(%s)",
+                ('safety_manual_v2', sorted({r['chunk_id'] for r in rows})))
+            body = {cid: ''.join(text.split()) for cid, text in cur.fetchall()}
+    for r in rows:
+        if ''.join(r['text'].split()) not in body.get(r['chunk_id'], ''):
+            raise RuntimeError(
+                f"{r['chunk_id']} 에 고정 문장이 없다 — {r['text'][:20]}…")
+    return [(r['grade'], r['source'], r['text']) for r in rows]
+
+
+class SopEngineV2(core.SopEngine):
+    """공식 대응 문서를 검색하고 젯슨 실측값을 결정적으로 표시한다.
+
+    ═══ 왜 바꾸나 ═══
+      v1 출력 실측:
+        1. 낙상 발생 장소를 확인하고 안전한 위치로 이동하세요.
+        2. 위험을 최소화하기 위해 작업자의 안전을 보호하는 방식으로 움직여야 합니다.
+        3. 사고 사유와 관련된 정보를 기록합니다.
+      → 레이더가 준 정보(높이 0.31m, 1.31m 하강, 이후 정지, 변전실=활선구역)가
+        한 글자도 안 들어갔다. 이 문장은 LLM 없이 하드코딩해도 똑같이 나온다.
+        즉 "왜 LLM을 넣었나"를 설명할 수 없는 상태였다.
+      → 경보 안전 경로에서 생성형 모델을 빼고 evidence 를 그대로 표시한다.
+
+    ═══ 숫자를 지어내지 못하게 하는 장치 ═══
+      · 표시값은 전부 젯슨 classify() 가 계산해 보낸 값이다.
+      · 생성 지연·환각·문장 잘림 없이 매 사건의 현재 값이 즉시 반영된다.
+    """
+
+    cache_progress = QtCore.pyqtSignal(int, int, str)
+    PREPARE_MODEL = 'qwen2.5:3b-instruct-q4_K_M'
+    PREPARE_EVENTS = (
+        'fall_detected', 'pinching', 'electric_shock_risk_confirmed',
+        'overcurrent', 'leakage_current', 'stationary_anomaly',
+    )
+
+    # ⚠ [8/25] 데몬 스레드가 살아 있는 채로 앱이 닫히면 Qt 객체가 먼저 지워져
+    #   signal.emit 자체가 RuntimeError 를 낸다. 그러면 except 절 안의 emit 도
+    #   같이 터져 traceback 이 콘솔로 새어 나간다(레이아웃 검증 2회차 실측).
+    #   _work_v2 주석이 "무슨 일이 있어도 조용히 끝난다" 라고 적어 둔 불변식이
+    #   실제로는 지켜지지 않고 있었다 → emit 을 감싸서 불변식을 코드로 만든다.
+    #   삼키는 것은 '이미 창이 닫힌 뒤의 표시 실패' 뿐이고, 검색·생성 실패는
+    #   그대로 화면에 뜬다(README §9).
+    def _emit_status(self, msg):
+        try:
+            self.status.emit(msg)
+        except RuntimeError:
+            pass
+
+    def _emit_ready(self, *args):
+        try:
+            self.ready.emit(*args)
+        except RuntimeError:
+            pass
+
+    def request(self, ev_type, facts=None):
+        threading.Thread(target=self._work_v2, args=(ev_type, facts or {}),
+                         daemon=True).start()
+
+    # ── 검색 (v1 _work 의 앞부분과 동일한 절차) ──
+    def _search(self, ev_type):
+        if not RAG_OK:
+            self._emit_status('매뉴얼 검색 불가 — langchain 미설치 (즉시 조치만 표시)')
+            return [], ''
+        try:
+            self._emit_status('안전 매뉴얼 검색 중…')
+            situation = (core.SOP_QUERY.get(ev_type)
+                         or f'{EVENT_KO.get(ev_type, ev_type)} 조치')
+            cat = core.EVENT_CATEGORY.get(ev_type)
+            emb = core.OllamaEmbeddings(model=EMBED_MODEL)
+            vs = core.PGVector(connection_string=core.CONN_STR,
+                               embedding_function=emb,
+                               collection_name='safety_manual')
+            docs = core.search_sop_documents(vs, ev_type, situation, cat)
+            srcs = [(d.metadata.get('source_file', '?'),
+                     ' '.join(d.page_content.split())[:360]) for d in docs]
+            self._emit_status(f'매뉴얼 {len(docs)}건 검색됨')
+            return srcs, ' '.join(d.page_content for d in docs)[:1500]
+        except Exception as e:
+            self._emit_status(f'매뉴얼 검색 실패: {e}  (docker start radar-guard-db)')
+            return [], ''
+
+    def _work_v2(self, ev_type, facts):
+        # ⚠ 데몬 스레드에서 예외가 밖으로 나가면 콘솔에 traceback 이 찍히고,
+        #   앱 종료 중이면 Qt 객체가 이미 정리된 상태라 2차 예외까지 난다.
+        #   SOP 는 안전 조치의 필수 경로가 아니다(즉시조치는 이미 화면에 있다).
+        #   → 무슨 일이 있어도 이 스레드는 조용히 끝난다.
+        try:
+            with AI_WORK_LOCK:
+                self._work_body(ev_type, facts)
+        except Exception as e:
+            self._emit_status(f'SOP 처리 실패: {e}  (즉시조치는 계속 표시)')
+
+    def _work_body(self, ev_type, facts):
+        if not ALARM_SCREEN_LLM:
+            # 공식 매뉴얼 원문 + 젯슨 실측 브리핑만. 캐시도 생성도 쓰지 않는다.
+            brief = self._fact_block(facts).replace(
+                '\n- ', ' · ').removeprefix('- ')
+            if ALARM_EMBED_SEARCH:
+                srcs, _ = self._search(ev_type)
+            else:
+                try:
+                    srcs = alarm_pinned_sentences(ev_type)
+                except Exception as e:
+                    # 다른 문장으로 대체하지 않는다 — 즉시조치만 남는다.
+                    # psycopg2 오류는 여러 줄이다 — 상태줄에는 첫 줄만.
+                    why = (str(e).splitlines() or [type(e).__name__])[0]
+                    self._emit_status(f'공식 원문 조회 실패: {why}  '
+                                      '(docker start radar-guard-db)')
+                    self._emit_ready(ev_type, [], brief)
+                    return
+                if not srcs:
+                    self._emit_status('등록된 공식 원문 없음 · 즉시조치 표시')
+            if srcs:    # 검색 실패 문구는 덮어쓰지 않는다
+                self._emit_status('공식 매뉴얼 원문 표시 · 생성형 AI 미사용')
+            self._emit_ready(ev_type, srcs, brief)
+            return
+        cached = self._cache.get(ev_type)
+        if cached:
+            srcs, generated = cached
+            brief = self._fact_block(facts).replace(
+                '\n- ', ' · ').removeprefix('- ')
+            self._emit_status('사전 준비된 AI SOP 표시 · 실시간 센서 브리핑 결합')
+            self._emit_ready(
+                ev_type, srcs, f'{brief}\n---AI_SOP---\n{generated}')
+            return
+        srcs, ctx = self._search(ev_type)
+        brief = self._fact_block(facts).replace('\n- ', ' · ').removeprefix('- ')
+        self._emit_status('공식 매뉴얼 표시 · AI 보조 요약 준비 중…')
+        self._emit_ready(ev_type, srcs, brief)
+        if not core.USE_LLM_SUMMARY:
+            return
+        try:
+            def show_partial(generated):
+                self._emit_ready(
+                    ev_type, srcs, f'{brief}\n---AI_SOP---\n{generated}')
+
+            generated = self._gen_facts(ev_type, ctx, facts, show_partial)
+            self._emit_status('AI 보조 요약 표시 · 공식 매뉴얼 기반')
+            self._emit_ready(
+                ev_type, srcs,
+                f'{brief}\n---AI_SOP---\n{generated}')
+        except Exception as e:
+            self._emit_status(f'AI 보조 요약 실패: {e}  (공식 원문은 계속 표시)')
+
+    # ── 사실 블록 ──
+    @staticmethod
+    def build_facts(ev, pkt, elapsed_sec=0):
+        """젯슨이 보낸 값만 골라 담는다. 노트북이 계산한 값은 넣지 않는다."""
+        e = ev.get('evidence') or {}
+        z = ev.get('zone') or RADAR_ZONE
+        bs = ((pkt.get('breaker') or {}).get('state')) or {}
+        src = (pkt.get('breaker') or {}).get('src')
+        off = bs.get(z, 'ON') != 'ON'
+        no_auto_trip = ev.get('type') not in AUTO_TRIP_EVENTS
+        return {
+            'zone': f"{z} {ZONE_KO.get(z, '')}",
+            'hazard': ZONE_HAZARD.get(z, ''),
+            'height_start': e.get('height_start'),
+            'height_end': e.get('height_end'),
+            'h_drop': e.get('h_drop'),
+            'horiz_range': e.get('horiz_range'),
+            'ds_last': e.get('ds_last'),
+            'conf': ev.get('conf'),
+            'height_now': pkt.get('height'),
+            'elapsed': elapsed_sec,
+            'breaker': ('경보 — 설비 회로 자동 차단 대상 아님' if no_auto_trip
+                        else '차단 완료(실측 확인)' if off and src == 'modbus'
+                        else '차단 신호 발신(실측 미확인 — 현장 확인 필요)'
+                        if off else '차단 미확인'),
+        }
+
+    @staticmethod
+    def _fact_block(facts):
+        L = []
+        add = lambda t: L.append(f'- {t}')
+        if facts.get('zone'):
+            add(f"위치: {facts['zone']}"
+                + (f" ({facts['hazard']})" if facts.get('hazard') else ''))
+        hs, he = facts.get('height_start'), facts.get('height_end')
+        if hs is not None and he is not None:
+            add(f'사람 높이: {hs:.2f} m → {he:.2f} m'
+                + (f" (총 {facts['h_drop']:.2f} m 하강)"
+                   if facts.get('h_drop') is not None else ''))
+        elif facts.get('height_now') is not None:
+            add(f"현재 높이: {facts['height_now']:.2f} m (바닥 기준)")
+        if facts.get('ds_last') is not None:
+            add(f"쓰러진 뒤 움직임: {facts['ds_last']:.2f} "
+                f"({'거의 정지' if facts['ds_last'] < 1.0 else '지속 중'})")
+        if facts.get('horiz_range') is not None:
+            add(f"수평으로 퍼진 폭: {facts['horiz_range']:.2f} m")
+        if facts.get('elapsed'):
+            add(f"무동작 경과: 약 {int(facts['elapsed'])}초")
+        if facts.get('conf') is not None:
+            add(f"판정 점수: {facts['conf']:.2f}")
+        if facts.get('breaker'):
+            add(f"해당 설비 회로: {facts['breaker']}")
+        return '\n'.join(L)
+
+    @staticmethod
+    def _cacheable_sop(text):
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return (len(lines) == 4
+                and all(line.startswith(f'{i}. ') and len(line) > 4
+                        for i, line in enumerate(lines, 1))
+                and not any(mark in text for mark in ('#', '*', '[', ']')))
+
+    @staticmethod
+    def _gen_facts(ev_type, ctx, facts, on_update=None):
+        import urllib.request
+        label = EVENT_KO.get(ev_type, ev_type)
+        fact_block = SopEngineV2._fact_block(facts)
+        verified_actions = '\n'.join(
+            f'- {action}' for _, actions in INSTANT_ACTION.get(ev_type, [])
+            for action in actions)
+        task = ('사건마다 공통으로 적용할 초동 조치 SOP를 작성하라. '
+                '실시간 센서값은 경보 때 별도로 표시된다.' if not fact_block else
+                '아래 젯슨 실측값을 반영한 초동 조치 SOP를 작성하라.')
+        breaker_rule = (' 이미 차단된 전원을 다시 차단하라고 하지 마라.'
+                        if fact_block else '')
+        prompt = (
+            f'너는 산업 현장 안전관리 보조자다. "{label}" 경보에 대해 '
+            f'공식 매뉴얼 발췌만 근거로 {task}\n'
+            f'[젯슨 실측값]\n{fact_block or "경보 시 별도 표시"}\n'
+            f'[확정 즉시조치]\n{verified_actions or "등록된 조치 없음"}\n'
+            f'[공식 매뉴얼 발췌]\n{ctx[:700] or "검색 결과 없음"}\n'
+            f'규칙: 반드시 1.부터 4.까지 정확히 네 줄만 출력하고 각 줄은 '
+            f'25자 이내의 완결된 한 문장으로 써라. 제목·소제목·불릿·마크다운·'
+            f'대괄호 빈칸은 쓰지 마라. 확정 즉시조치의 의미를 바꾸거나 누락하지 '
+            f'말고, 없는 수치를 만들지 마라.'
+            f'{breaker_rule} '
+            f'환자 이동·응급처치는 위 매뉴얼과 충돌하지 않게 쓰고 서론은 생략하라.')
+        body = json.dumps({
+            'model': (core.LLM_MODEL if fact_block else SopEngineV2.PREPARE_MODEL),
+            'prompt': prompt, 'stream': bool(fact_block),
+            'keep_alive': '30m',
+            **({} if fact_block else {'format': {
+                'type': 'object', 'properties': {'steps': {
+                    'type': 'array', 'items': {'type': 'string'},
+                    'minItems': 4, 'maxItems': 4}}, 'required': ['steps']} }),
+            'options': {'num_ctx': 1536, 'num_predict': 160, 'temperature': 0.0},
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            core.OLLAMA_URL, data=body,
+            headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=120) as response:
+            if not fact_block:
+                raw = json.loads(response.read().decode('utf-8')).get('response', '')
+                steps = json.loads(raw).get('steps', [])
+                return '\n'.join(f'{i}. {step.strip()}'
+                                 for i, step in enumerate(steps, 1))
+            generated = ''
+            shown = 0
+            for line in response:
+                part = json.loads(line.decode('utf-8')).get('response', '')
+                generated += part
+                if on_update and (len(generated) - shown >= 24 or not part):
+                    on_update(generated.strip())
+                    shown = len(generated)
+            return generated.strip()
+
+    def prewarm(self):
+        """공식 문서를 검색해 6종 SOP를 미리 만들고 경보 때 즉시 표시한다."""
+        if QtCore.qEnvironmentVariable('QT_QPA_PLATFORM') == 'offscreen':
+            return
+        total = len(self.PREPARE_EVENTS)
+        self.cache_progress.emit(0, total, '')
+        def worker():
+            failed = []
+            for done, ev_type in enumerate(self.PREPARE_EVENTS, 1):
+                with AI_WORK_LOCK:
+                    try:
+                        srcs, ctx = self._search(ev_type)
+                        if not srcs:
+                            raise RuntimeError('공식 SOP 검색 결과 없음')
+                        generated = self._gen_facts(ev_type, ctx, {})
+                        if not self._cacheable_sop(generated):
+                            raise RuntimeError('AI 요약 4단계 형식 불일치')
+                        self._cache[ev_type] = (srcs, generated)
+                        if ev_type == 'electric_shock_risk_confirmed':
+                            self._cache['electric_shock_risk'] = (srcs, generated)
+                    except Exception as e:
+                        failed.append(EVENT_KO.get(ev_type, ev_type))
+                        self._emit_status(f'{EVENT_KO.get(ev_type, ev_type)} SOP 준비 실패: {e}')
+                    self.cache_progress.emit(done, total, ', '.join(failed))
+        threading.Thread(target=worker, daemon=True).start()
+
+
+class ConsoleV2(QtWidgets.QMainWindow):
+    """앱 셸.
+
+    ⚠ 경보 상태기계·패킷 처리 순서는 v1 Console 과 의미가 같다. 위젯 이름만
+      새 화면 구조에 맞게 바뀌었다. 바꾼 곳에는 전부 주석을 달았다.
+    """
+    chat_warmed = QtCore.pyqtSignal(str)    # 워밍업 결과 ('' = 성공)
+    HIST_KEYS = ('cz', 'ds', 'sc', 'logs', 'incidents')
+    NAV_WIDTH = 224
+
+    def __init__(self, link=None, demo=False):
+        super().__init__()
+        self.link = link
+        self.demo = demo
+        self.pkt = {}
+        self.rx_ts = 0.0
+        self.alive = False
+        self.alarm = ST_NORMAL
+        self.alert = None
+        self.alert_t0 = 0.0        # ★ 노트북 수신 시각 기준 (젯슨 시계 안 씀)
+        self.last_ev_id = 0
+        self.last_ev_rev = 0
+        self.incidents = []
+        self.today = 0
+        self.boot_t = time.time()
+        self.quiet_since = None
+        self.blink = False
+        self._phase = None
+        self._prewarmed = False
+        self._nav_pending = False
+        self._pre = None
+        self._recent = deque(maxlen=4)
+
+        self.zone = RADAR_ZONE
+        self.shift = '주간조'
+        self.operator = '미지정'
+
+        self.setWindowTitle(f'Radar-Guard 관제 {APP_VERSION}')
+        self.resize(1440, 900)
+        # 1440×900 기준 설계. 이보다 작아지면 경보 배너 + 장면 + 계측 + 타임라인이
+        #   세로로 안 들어가 위젯이 겹친다 — 겹치느니 창을 못 줄이게 막는다.
+        self.setMinimumSize(1200, 800)
+        self.setStyleSheet(
+            f'QMainWindow{{background:{BG};}}'
+            f'QStackedWidget{{background:{BG};}}'
+            f'QWidget{{color:{TXT};}}'
+            f'QToolTip{{background:{PANEL_HI};color:{TXT};border:1px solid {EDGE};'
+            f'padding:4px;}}')
+
+        root = QtWidgets.QWidget()
+        self.setCentralWidget(root)
+        h = QtWidgets.QHBoxLayout(root)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+        self._shell_layout = h
+        self._drawer_open = False
+        self._nav_was_open = False
+        self.menu_gutter = QtWidgets.QWidget()
+        self.menu_gutter.setFixedWidth(64)
+        h.addWidget(self.menu_gutter)
+        self.nav = SideNav()
+        self.nav.navigate.connect(self._nav_from_overlay)
+        self.nav.hide()
+        h.addWidget(self.nav)
+
+        self.stack = QtWidgets.QStackedWidget()
+        h.addWidget(self.stack, 1)
+
+        self.menu_btn = QtWidgets.QToolButton(root)
+        self.menu_btn.setText('☰')
+        self.menu_btn.setToolTip('메뉴 열기')
+        self.menu_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.menu_btn.setFixedSize(38, 38)
+        self.menu_btn.setFont(f(F_H2, bold=True))
+        self.menu_btn.setStyleSheet(
+            f'QToolButton{{background:{PANEL};color:{TXT};border:1px solid {EDGE};'
+            f'border-radius:19px;}}QToolButton:hover{{color:{CYAN};'
+            f'border-color:{CYAN};}}')
+        self.menu_btn.clicked.connect(self._toggle_nav)
+
+        # 0 대시보드
+        self.dash = DashboardPage(link, demo)
+        self.dash.enter_zone.connect(self.begin_session)
+        self.dash.open_settings.connect(lambda: self._navigate(NAV_SETTINGS))
+        self.stack.addWidget(as_page(self.dash))
+
+        # 1 실시간 감시
+        self.monitor = MonitorPage(has_prepare=bool(link))
+        self.monitor.ack.connect(self.do_ack)
+        self.monitor.resolve.connect(self.do_resolve)
+        self.monitor.prepare.connect(self.go_prepare)
+        self.monitor.mode_changed.connect(self._refresh_scene)
+        self.monitor.enter_confirmed.connect(lambda: self._set_occupancy(True))
+        self.monitor.exit_confirmed.connect(lambda: self._set_occupancy(False))
+        self.stack.addWidget(as_page(self.monitor))
+        self.scene = self.monitor.scene
+        self.track = self.scene.track          # SettingsPopup 진단 탭이 참조한다
+        self.timeline = self.monitor.timeline
+        self.drawer = self.monitor.drawer
+        self.drawer.visibility_changed.connect(self._on_action_drawer)
+
+        # 2 이벤트 로그
+        self.evlog = EventLogPage()
+        self.stack.addWidget(as_page(self.evlog))
+
+        # 3 현장 준비 (링크가 있을 때만 의미가 있다)
+        self.prep = core.PreparePage(link) if link else None
+        if self.prep:
+            self.prep.back.connect(lambda: self._navigate(0))
+            self.prep.skip.clicked.connect(self.enter_console)
+            self.stack.addWidget(as_page(self.prep))
+        else:
+            ph = QtWidgets.QWidget()
+            pv = vbox(ph, SP5, SP3)
+            pv.addWidget(lb('현장 준비', F_DISPLAY, TXT, bold=True))
+            pv.addWidget(lb('데모 모드에서는 사용할 수 없습니다 — '
+                            '젯슨에 연결한 뒤(--live) 진행하세요.', F_BODY, DIM))
+            pv.addStretch()
+            self.stack.addWidget(as_page(ph))
+
+        # 4 SOP 가이드
+        self.sopguide = SopGuidePage()
+        self.stack.addWidget(as_page(self.sopguide))
+
+        # ── 팝업 (v1 그대로 재사용) ──
+        self.pwr = PowerPopup(self, link)
+        self.restore = RestorePopup(self)
+        self.graph = GraphPopup(self)
+        self.cfg = SettingsPopupV2(self, link, self)
+        self.engine = SopEngineV2()
+        self.engine.ready.connect(self.drawer.sop.set_sources)
+        self.engine.status.connect(self.drawer.sop.set_status)
+        self.engine.cache_progress.connect(self._on_cache_progress)
+        self._prewarmed = True
+        self.chat_warmed.connect(self._on_chat_warmed)
+        QtCore.QTimer.singleShot(
+            0, self.engine.prewarm if ALARM_SCREEN_LLM else self._warm_chat)
+        self.pwr.restore_btn.clicked.connect(self.do_restore)
+        self.monitor.b_pwr.clicked.connect(self._show_pwr)
+        self.monitor.b_graph.clicked.connect(self.graph.show)
+
+        self.assistant = AssistantDrawer(self, self)
+        self.assistant.visibility_changed.connect(self._on_assistant_visible)
+        self.ai_btn = AiIconButton(root)
+        self.ai_btn.clicked.connect(self._open_assistant)
+        self.monitor.b_query.clicked.connect(self._open_assistant)
+
+        self.timeline.add('시스템 시작', GREEN)
+        self.timeline.add(f'3D 렌더 {"OpenGL" if self.track.gl else "2D 측면도 대체"}')
+        if not RAG_OK:
+            self.timeline.add('매뉴얼 검색 비활성 (langchain 미설치)', AMBER)
+
+        # ── 타이머 ──
+        #  렌더는 패킷 도착 시그널이 몰고, 이 타이머는 시계·점멸·경과시간만 갱신한다.
+        self.ui_timer = QtCore.QTimer(self)
+        self.ui_timer.timeout.connect(self.tick_ui)
+        self.ui_timer.start(500)
+        if link:
+            link.packet.connect(self.on_packet)
+            link.linkstate.connect(self.on_link)
+        if demo:
+            self.demo_src = core._DemoSource()
+            self.demo_timer = QtCore.QTimer(self)
+            self.demo_timer.timeout.connect(
+                lambda: self.on_packet(self.demo_src.read()))
+            self.demo_timer.start(100)
+            self.alive = True
+            self._set_link_label('데모 모드', AMBER)
+        self.nav.set_user(self.shift, self.operator)
+        self._apply_shell_geometry()
+
+    def _warm_chat(self):
+        """앱 시작 시 챗봇 모델을 미리 올린다. SOP·답 생성이 아니다."""
+        if QtCore.qEnvironmentVariable('QT_QPA_PLATFORM') == 'offscreen':
+            return
+        self.dash.set_ai_status(False, '준비 중', '챗봇 워밍업 중', AMBER)
+
+        def worker():
+            err, t0 = '', time.perf_counter()
+            for attempt in range(CHAT_WARM_TRIES):
+                if attempt:
+                    time.sleep(CHAT_WARM_GAP_SEC)
+                try:
+                    # 워밍업 중 들어온 질문은 이 잠금 뒤에서 순서대로 처리된다.
+                    with AI_WORK_LOCK:
+                        chat_model_keep(CHAT_KEEP_ALIVE, timeout=120)
+                        chat_model_keep(
+                            CHAT_KEEP_ALIVE, timeout=120, num_predict=100,
+                            prompt=build_chat_request(
+                                CHAT_WARM_QUESTION,
+                                variant=CHAT_VARIANT)['prompt'])
+                    err = ''
+                    break
+                except Exception as e:
+                    err = str(e) or type(e).__name__
+            # 화면 카드와 같은 결과를 로그에도 남긴다(start_demo.ps1 이 파일로 받는다).
+            print(f'[AI] 챗봇 워밍업 {time.perf_counter() - t0:.1f}초 · '
+                  f'{"준비 실패 — " + err if err else "준비 완료"}', flush=True)
+            try:
+                self.chat_warmed.emit(err)
+            except RuntimeError:    # 워밍업이 끝나기 전에 창이 닫혔다
+                pass
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_chat_warmed(self, err):
+        if err:
+            self.dash.set_ai_status(
+                False, '준비 실패', '챗봇 준비 실패 — Ollama 확인', AMBER)
+            self.timeline.add(f'챗봇 준비 실패 · {err}', AMBER)
+        else:
+            self.dash.set_ai_status(
+                True, '준비 완료',
+                '챗봇 준비 완료 · 경보 화면은 즉시조치·공식 원문', GREEN)
+            self.timeline.add('챗봇 준비 완료', GREEN)
+
+    def _on_cache_progress(self, done, total, failed):
+        if done < total:
+            self.dash.set_ai_status(
+                False, '준비 중', f'6종 SOP 사전 준비 {done}/{total}', AMBER)
+        elif failed:
+            self.dash.set_ai_status(
+                False, '일부 실패', f'경보 시 생성: {failed}', AMBER)
+            self.timeline.add(f'AI SOP 일부 준비 실패 · {failed}', AMBER)
+        else:
+            self.dash.set_ai_status(
+                True, '준비 완료', '6종 SOP 즉시 출력 가능', GREEN)
+            self.timeline.add('AI SOP 6종 준비 완료', GREEN)
+
+    # ══════════════════════════════════════════════════════════════════
+    # 화면 이동
+    # ══════════════════════════════════════════════════════════════════
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_shell_geometry()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._apply_shell_geometry)
+
+    def _apply_shell_geometry(self):
+        if not hasattr(self, 'stack'):
+            return
+        if hasattr(self, 'menu_btn'):
+            self.menu_btn.move(self.NAV_WIDTH - 48 if self.nav.isVisible() else 13, 12)
+            self.menu_btn.raise_()
+        if hasattr(self, 'ai_btn'):
+            if self.nav.isVisible():
+                pos = self.nav.user.mapTo(
+                    self.centralWidget(), QtCore.QPoint(0, -58))
+                self.ai_btn.move(pos)
+            else:
+                self.ai_btn.move(9, max(56, self.height() - 70))
+            self.ai_btn.raise_()
+
+    def _toggle_nav(self):
+        opening = not self.nav.isVisible()
+        self.menu_gutter.setVisible(not opening)
+        self.nav.setVisible(opening)
+        self._apply_shell_geometry()
+        self.menu_btn.raise_()
+
+    def _nav_from_overlay(self, idx):
+        self.nav.hide()
+        self.menu_gutter.show()
+        self._navigate(idx)
+        self._apply_shell_geometry()
+
+    def _on_action_drawer(self, opening):
+        self._drawer_open = opening
+        if opening:
+            self._nav_was_open = self.nav.isVisible()
+            # SOP가 열려도 햄버거용 64px 레일은 남긴다.
+            reclaimed = self.NAV_WIDTH - self.menu_gutter.width() \
+                if self._nav_was_open else 0
+            self.nav.hide()
+            self.menu_gutter.show()
+            self.drawer.set_extra_width(reclaimed)
+        else:
+            # 조치 확인 뒤 사이드바를 자동 복원하면 관제 화면 전체가 160px
+            # 이동한다. 사용자가 원할 때만 햄버거로 다시 연다.
+            self.nav.hide()
+            self.menu_gutter.show()
+        if hasattr(self, 'assistant'):
+            self.assistant.close_drawer()
+        if hasattr(self, 'ai_btn'):
+            self.ai_btn.setVisible(not opening)
+        if not opening:
+            self.drawer.set_extra_width(0)
+        self._apply_shell_geometry()
+
+    def _open_assistant(self):
+        if self.alarm != ST_NORMAL:
+            self.timeline.add('경보 중에는 조치 가이드를 우선합니다', AMBER)
+            self.drawer.open_at(0)
+            return
+        self.assistant.open_drawer()
+
+    def _on_assistant_visible(self, visible):
+        self.ai_btn.setVisible(not self._drawer_open)
+
+    def _navigate(self, idx):
+        if idx == NAV_SETTINGS:
+            self.nav.select(self.stack.currentIndex())   # 설정은 페이지가 아니라 모달
+            self.cfg.show()
+            self.cfg.raise_()
+            return
+        if idx == PG_PREP and self.prep and self.pkt:
+            self.prep.update_phase(self.pkt)
+            self.prep.set_zone(self.zone)
+        self.stack.setCurrentIndex(idx)
+        self.nav.select(idx)
+        self._apply_shell_geometry()
+
+    def _set_link_label(self, text, color):
+        self.monitor.link_lb.setText(f'● {text}')
+        self.monitor.link_lb.setStyleSheet(
+            f'color:{color};border:none;background:transparent;')
+
+    def _auto_nav(self):
+        """경보 발생 AUTO_NAV_MS 뒤 감시 화면으로. 그 사이 상황이 바뀌면 취소."""
+        self._nav_pending = False
+        if self.alarm == ST_UNACK and self.stack.currentIndex() != PG_MON:
+            self.enter_console()
+
+    def cur_sev(self, pkt=None):
+        """지금 화면이 써야 할 경보 등급. 경보가 없으면 'normal'.
+
+        pkt 를 주면 상태기계가 아직 반영하지 못한 '방금 도착한 경보' 도 본다
+        (대시보드처럼 상태기계보다 먼저 그려지는 화면용).
+        """
+        if self.alarm != ST_NORMAL and self.alert:
+            return self.alert.get('sev') or event_sev(self.alert.get('type'))
+        ev = (pkt or {}).get('ev') or {}
+        if ev.get('active'):
+            return ev.get('sev') or event_sev(ev.get('type'))
+        return 'normal'
+
+    def _incident_visual(self):
+        """경보 종류를 실측 자세와 구분된 OBJ 사고 포즈로 반환한다."""
+        if not self.alert:
+            return None
+        types = set(self.alert.get('types') or [self.alert.get('type')])
+        if 'fall_detected' in types:
+            # 변압기와 겹치지 않는 전면 빈 바닥에 사고 예시 자세를 둔다.
+            return {'kind': 'fall', 'pos': (0.0, -0.55)}
+        if types & {'pinching', 'pinching_suspected'}:
+            # 우측 변압기 강제냉각 팬 앞. 표시 전용 고정 위치다.
+            return {'kind': 'pinching', 'pos': (0.65, 0.18)}
+        if types & {'electric_shock_risk', 'electric_shock_risk_confirmed'}:
+            # 좌측 단자함 앞. 표시 전용 고정 위치로 판정 좌표가 아니다.
+            return {'kind': 'electric', 'pos': (-0.82, 0.28)}
+        return None
+
+    def _refresh_scene(self):
+        """3D↔2D 전환 직후, 새 패킷을 기다리지 않고 즉시 다시 그린다.
+
+        ⚠ [8/02] set_mode() 는 렌더를 안 하고 다음 패킷을 기다렸다. 젯슨
+          링크가 끊긴 뒤에도 LINK_TIMEOUT(3초, radar_common.py)까지는 아직
+          stale 베일이 안 뜨는데, 그 창 안에서 경보 중 모드를 바꾸면 다음
+          패킷이 영영 안 와 방금 활성화된 위젯이 예전 색에 멈춰 있을 수
+          있었다. 새 상태를 만들지 않고 이미 있는 self.pkt/self.alarm/
+          self.alert 로만 다시 그린다(§1의 '상태를 새로 늘리지 않는다').
+        """
+        if not self.pkt:
+            return
+        sev = self.cur_sev()
+        lost = (self.alarm != ST_NORMAL
+                and (self.alert or {}).get('type') in ('fall_detected', 'fall_suspected',
+                                                       'stationary_anomaly'))
+        self.scene.track._incident = self._incident_visual()
+        self.scene.redraw(sev, hide_shape=lost)
+
+    def _lock_nav(self):
+        """미확인(UNACK) 경보 중에는 감시 화면만 남긴다.
+
+        v1 은 '다른 화면에 있으면 강제로 관제로 되돌린다'로 같은 목적을 달성했다.
+        네비게이션이 생겼으므로, 되돌리는 대신 아예 못 나가게 하는 편이
+        조작 결과가 예측 가능하다 ('눌렀는데 튕겨나감'이 없다).
+        """
+        self.nav.set_locked(self.alarm == ST_UNACK, allow=(PG_MON,))
+
+    # ══════════════════════════════════════════════════════════════════
+    # 링크
+    # ══════════════════════════════════════════════════════════════════
+    def on_link(self, alive):
+        self.alive = alive
+        self._set_link_label('연결 정상' if alive else '연결 끊김',
+                             GREEN if alive else RED)
+        self.timeline.add('젯슨 연결됨' if alive else '젯슨 연결 끊김 — 화면 정지',
+                          GREEN if alive else RED)
+        if not alive:
+            self.scene.set_stale(True, '데이터 없음\n젯슨 연결이 끊겼습니다')
+
+    def _set_occupancy(self, occupied):
+        """운영자 재실 확인. 낙상 판정·경보·차단 상태에는 손대지 않는다."""
+        if not self.link:
+            return
+        cmd = CMD_ENTER if occupied else CMD_EXIT
+        if self.link.send_cmd(cmd):
+            self.timeline.add('작업자 입실 확인' if occupied else '작업자 퇴실 확인',
+                              GREEN if occupied else DIM)
+
+    # ══════════════════════════════════════════════════════════════════
+    # 패킷 수신 (도착 즉시 렌더)
+    # ══════════════════════════════════════════════════════════════════
+    #   히스토리(cz/ds/sc/logs/incidents)는 1초에 한 번 오는 'full' 패킷에 실린다.
+    #   full 이 아닌 패킷엔 그 키가 없으므로 직전 값을 이어 붙인다. (v1 과 동일)
+    def on_packet(self, pkt):
+        previous = self.pkt
+        if not pkt.get('full'):
+            for k in self.HIST_KEYS:
+                if k not in pkt and k in self.pkt:
+                    pkt[k] = self.pkt[k]
+        if pkt.get('ev'):
+            # 표시용 사본 — 진동 판정은 관제 경보로 띄우지 않는다(display_event).
+            pkt['ev'] = display_event(pkt['ev'])
+        self.pkt = pkt
+        self.rx_ts = time.time()
+        self.alive = True
+        self.dash.on_packet(pkt)
+
+        prev_breaker = (previous.get('breaker') or {}) if previous else {}
+        breaker = pkt.get('breaker') or {}
+        if (prev_breaker.get('src') == 'modbus'
+                and prev_breaker.get('connected')
+                and breaker.get('src') == 'modbus'
+                and breaker.get('connected')):
+            before = prev_breaker.get('state') or {}
+            after = breaker.get('state') or {}
+            restored = [z for z in ZONE_IDS
+                        if before.get(z) not in (None, 'ON')
+                        and after.get(z) == 'ON']
+            for z in restored:
+                place = ZONE_KO.get(z, f'Zone {z}')
+                self.timeline.add(f'{z} {place} 전력 복구 확인', GREEN)
+                self.assistant.system_notice(
+                    f'{place}에서 전력을 복구했습니다. Modbus 릴레이 응답으로 '
+                    '정상 투입 상태를 확인했습니다.')
+
+        ev0 = pkt.get('ev') or {}
+        page = self.stack.currentIndex()
+
+        # 미확인 경보가 뜨면 감시 화면으로 데려온다 (v1 과 동일한 안전 장치)
+        #   ⚠ 즉시 넘기지 않고 AUTO_NAV_MS 만큼 기다린다. 관제에서 첫 질문은
+        #     '어디' 이고, 평면도에서 그 구역이 붉어지는 걸 보고 넘어가는 편이
+        #     바로 상세 화면으로 튀는 것보다 상황 파악이 빠르다.
+        #     (확인함(ACK) 이후에는 자동으로 끌고 오지 않는다 — 근무자가 이미 안다)
+        if page != PG_MON and ev0.get('active') and self.alarm != ST_ACK:
+            if not self._nav_pending:
+                self._nav_pending = True
+                QtCore.QTimer.singleShot(AUTO_NAV_MS, self._auto_nav)
+
+        # RESET으로 현장준비 페이지에 있어도 젯슨의 경보 해소를 먼저 반영한다.
+        # 이전에는 PG_PREP 조기 return 뒤에 있어 과거 정지형 경보가 영구 잔류했다.
+        self._pump_state(pkt)
+        on_alert = self.alarm != ST_NORMAL
+        self._show_pre(pkt)          # 화면에 상관없이 항상 최신으로
+        # ⚠ 화면 전체가 같은 등급 색을 써야 한다. 배너는 주황인데 점군만
+        #   빨강이면 근무자는 두 개의 서로 다른 사건으로 읽는다.
+        sev = self.cur_sev(pkt)
+        # 대시보드 카드는 어느 화면에 있든 갱신한다 (v1 은 개요에서 렌더를 멈췄지만,
+        #   카드 지표가 비어 보이는 원인이었다. 비용은 라벨 4개다.)
+        self.dash.push(pkt, sev)
+        self.dash.set_alarm_count(1 if on_alert else 0, self.today, sev)
+
+        if page == PG_PREP:
+            if self.prep:
+                self.prep.update_phase(pkt)
+            if pkt.get('phase') == PH_LIVE and self.prep and self.prep.autoback:
+                self.prep.autoback = False
+                self.enter_console()          # 감시 시작 확인 → 관제로 자동 복귀
+            return
+        if page != PG_MON:
+            return
+
+        self.scene.set_stale(False)
+
+        occupied = bool(pkt.get('occupied'))
+        self.monitor.occupancy.setText('재실' if occupied else '퇴실')
+        self.monitor.occupancy.setStyleSheet(f'color:{GREEN if occupied else DIM};')
+        self.monitor.enter_btn.setEnabled(not occupied)
+        self.monitor.exit_btn.setEnabled(occupied)
+
+        ph = pkt.get('phase')
+        if ph != self._phase:
+            self._phase = ph
+            self.monitor.sub.setText(
+                f'{self.zone} {ZONE_KO.get(self.zone, "")} · {PHASE_KO.get(ph, ph or "")}')
+            self.timeline.add(f'단계 전환 · {PHASE_KO.get(ph, ph)}',
+                              GREEN if ph == PH_LIVE else DIM)
+            if ph == PH_LIVE and ALARM_SCREEN_LLM and not self._prewarmed:
+                self._prewarmed = True
+                self.engine.prewarm()
+
+        # ⚠ 상태기계를 '그리기 전에' 돌린다.
+        #   v1 은 렌더 → 상태기계 순서였다. 그러면 경보가 시작된 바로 그 패킷은
+        #   아직 self.alert 가 비어 있어 등급이 normal 로 계산되고, 점군·인체
+        #   도식만 초록으로 한 프레임 늦게 따라간다(실측: 주의 경보인데 도식이
+        #   초록으로 남음). 판정 결과는 패킷에 이미 들어 있으므로 먼저 반영한다.
+        on_alert = self.alarm != ST_NORMAL
+        sev = self.cur_sev()
+
+        ev = pkt.get('ev') or {}
+        # ⚠⚠ [8/01 실측] 사람 관련 경보 중인데 살아 있는 점군이 '서 있음' 이면,
+        #   그건 사람이 아니라 추적을 놓친 것이다.
+        #   정지한 사람은 도플러가 0 이라 FMCW 레이더가 놓치고, 그 자리를
+        #   '일정 거리 링'(다중경로·바닥반사)이 채운다. 실측에서 낙상 직후
+        #   마지막 프레임 6점 중 5점이 전부 y≈1.00(높이 1.30 m)인데 x·z 만
+        #   ±0.8 m 로 흩어져 있었다 — 누운 사람이면 0.1~0.4 m 여야 한다.
+        #   → 낙상 경보 옆에 '서 있는 사람' 을 그리면 화면이 거짓말을 한다.
+        #     형상을 지우고 이유를 쓴다. 이건 이 레이더의 알려진 한계다.
+        lost = (on_alert
+                and (self.alert or {}).get('type') in ('fall_detected', 'fall_suspected',
+                                                       'stationary_anomaly'))
+        incident = self._incident_visual()
+        self.scene.track._incident = incident
+        types = set((self.alert or {}).get('types') or
+                    [(self.alert or {}).get('type')]) if on_alert else set()
+        self.scene.track.set_equipment_alarm(
+            bool(types & {'overcurrent', 'leakage_current'}))
+        pose = self.scene.push(pkt, sev, hide_shape=lost)
+        if pose:
+            # ⚠ v1 은 zone 이 없을 때 'C' 로 떨어졌다 — 레이더가 없는 구역이다.
+            #   레이더 유래 정보는 레이더가 설치된 구역으로 보고한다.
+            z = ev.get('zone') or RADAR_ZONE
+            if incident:
+                shape = (f"{EVENT_KO.get((self.alert or {}).get('type'), '사고 감지')}"
+                         ' · 유형 안내')
+            elif lost:
+                shape = ('추적 소실 — 정지한 대상은 반사가 줄어 놓칩니다')
+            elif not pose['shape_ok']:
+                shape = f"형상 표시 안 함 ({pose['shape_why']})"
+            else:
+                shape = '서 있음' if pose['posture'] == 'standing' else '누워 있음'
+            self.monitor.set_pose_text(
+                f"{z} {ZONE_KO.get(z, '')} · {shape}"
+                f"   ·   {pose['label']}",
+                sev_color(sev) if on_alert else FAINT)
+        elif pkt.get('track_state') == 'lost_in_zone':
+            # 정지 인체는 도플러가 0이 되어 형상은 사라져도 젯슨 점유 트랙은 남는다.
+            # 없는 자세를 그리지 않고, 빈방과 구분되는 점유 상태만 사실대로 표시한다.
+            self.monitor.set_pose_text(
+                f"{RADAR_ZONE} {ZONE_KO.get(RADAR_ZONE, '')} · 점유 유지 · 정지로 점군 소실",
+                AMBER)
+        self.monitor.zstrip.update_state(pkt, sev)
+        self._update_tiles(pkt, on_alert)
+        self.graph.push(pkt)
+        self.pwr.push(pkt)
+
+    def _show_pre(self, pkt):
+        """정지형 사전경보 줄.
+
+        ⚠ 이건 경보가 아니다. 점멸·소리·네비 잠금 없이 조용히 알리기만 한다.
+          움직이면 젯슨이 pre_alert 를 비우고 줄은 그대로 사라진다.
+          경보(UNACK/ACK) 중에는 배너가 이미 있으므로 띄우지 않는다.
+        """
+        pre = parse_pre_alert(pkt.get('pre_alert')) if self.alarm == ST_NORMAL \
+            else None
+        self._pre = pre
+        if pre:
+            z = pre['zone']
+            self.monitor.pre_lb.setText(
+                f"{z} {ZONE_KO.get(z, '')} · {pre['text']} — "
+                f"움직이면 취소됩니다")
+            if not self.monitor.pre_bar.isVisible():
+                self.timeline.add(f"{z} 구역 사전경보 — {pre['text']}", AMBER)
+            self.monitor.pre_bar.show()
+        else:
+            self.monitor.pre_bar.hide()
+
+    def _pump_state(self, pkt):
+        """경보 상태기계 — v1 과 동일."""
+        ev = pkt.get('ev') or {}
+        eid = ev.get('id') or 0
+        rev = ev.get('rev') or 0
+        if ev.get('active') and (eid != self.last_ev_id or rev != self.last_ev_rev):
+            updating = eid == self.last_ev_id and self.last_ev_id != 0
+            self.last_ev_id = eid
+            self.last_ev_rev = rev
+            self.on_event(ev, updating=updating)
+        elif not ev.get('active') and self.alarm != ST_NORMAL:
+            # 젯슨이 먼저 해소한 경우(노트북 '상황 종료'의 왕복 결과 포함)
+            self.clear_alarm(remote=True)
+
+    def _update_tiles(self, st, alert):
+        ev = (st.get('ev') or {}).get('evidence') or {}
+        sc, th = st.get('_sc', 0.0), st.get('threshold', 0.0)
+        ratio = ((ev.get('ae_score', sc) or 0) /
+                 max(ev.get('ae_thr', th) or 1e-9, 1e-9)) if (ev or th) else 0
+        # ⚠ 경보 중에도 수치는 흰색을 유지한다. 빨강은 배너와 [조치 방법] 전용.
+        #   전부 빨개지면 시선의 종착점이 사라진다.
+        t = self.monitor.tiles
+        t['height'].set(f"{st.get('height') or 0:.2f}")
+        t['dop'].set(f"{st.get('dop_std', 0):.2f}")
+        n = st.get('n_pts', 0)
+        t['pts'].set(f'{n}', AMBER if n <= 2 else TXT,
+                     note='원시 · 누적 표시' if n <= 2 else '원시')
+        t['ae'].set(f'{ratio:.1f}' if ratio else '—',
+                    AMBER if ratio and ratio >= 1.0 else TXT)
+
+    def _stale_tiles(self):
+        for k in ('height', 'dop', 'pts', 'ae'):
+            self.monitor.tiles[k].set('—', FAINT)
+
+    # ══════════════════════════════════════════════════════════════════
+    # 경보
+    # ══════════════════════════════════════════════════════════════════
+    def on_event(self, ev, updating=False):
+        self.assistant.close_drawer()
+        self.alert = dict(ev)
+        types = list(dict.fromkeys(ev.get('types') or [ev.get('type')]))
+        items = ev.get('items') or {}
+        context = stationary_display_context(ev) if len(types) == 1 else None
+        if context:
+            self.alert['_display_context'] = context
+        if not updating:
+            self.alert_t0 = time.time()      # ★ 노트북 시각. 젯슨 시계 안 씀.
+        self.alarm = ST_UNACK
+        if not updating:
+            self.today += 1
+        z = ev.get('zone') or RADAR_ZONE
+        et = ev.get('type')
+        sev = ev.get('sev', 'critical')
+        # [10/17 T-CC07f §4-3] 등급 표기 '이름 [등급]' → '이름 · 등급'. 설비 이상
+        #   이름에 대괄호가 생겨(설비이상[과전류]) 겹치면 읽히지 않는다.
+        name = (context['name'] if context else ' + '.join(
+            f'{EVENT_KO.get(t, t)} · {SEV_KO.get((items.get(t) or {}).get("sev"), "")}'
+            if items.get(t) else EVENT_KO.get(t, t) for t in types if t))
+        sop_priority = ('electric_shock_risk_confirmed', 'pinching',
+                        'pinching_suspected', 'leakage_current',
+                        'electric_shock_risk', 'fall_detected',
+                        'overcurrent', 'voltage_drop')
+        sop_type = (context['sop_type'] if context else
+                    next((t for t in sop_priority if t in types), et))
+        col = sev_color(sev)
+
+        # [10/19 T-CC07g §4] 이름에 등급이 이미 있으면 끝의 등급을 붙이지 않는다
+        #   ('설비이상[과전류] · 위험 + … · A 변전실 · 위험' 중복). 이름에 등급이 없는
+        #   경우(정지형 이상 문맥 · items 없는 패킷)는 그대로 붙인다.
+        sev_ko = SEV_KO.get(sev, '')
+        tail = ('' if not sev_ko or any(f' · {s}' in name for s in SEV_KO.values())
+                else f' · {sev_ko}')
+        self.monitor.b_left.setText(f'● {name} · {z} {ZONE_KO.get(z, "")}{tail}')
+        self.monitor.banner.show()
+        # [10/19 T-CC07h 사용자 결정] 경보 카드 제목에서만 유형별 등급을 뺀다 — 상단 바
+        #   문장을 3줄로 다시 써 '구역 현황'의 차단 상태가 화면 밖으로 밀렸다(1440×900).
+        #   등급은 상단 바와 카드 테두리 색으로 보인다. 순서는 그대로.
+        self.monitor.a_kind.setText(context['name'] if context else ' + '.join(
+            EVENT_KO.get(t, t) for t in types if t))
+        self.monitor.a_kind.setStyleSheet(
+            f'color:{col};border:none;background:transparent;')
+        self.monitor.a_conf.setText(f'판정 점수 {ev.get("conf", 0):.2f}')
+        self.monitor.alert_box.setStyleSheet(
+            f'QFrame{{background:{PANEL};border:1px solid {col};'
+            f'border-radius:{RADIUS}px;}}')
+        # ⚠ '지금 누를 버튼' 도 등급 색을 따른다. 배너는 주황인데 버튼만 빨강이면
+        #   근무자는 두 개의 서로 다른 사건으로 읽는다.
+        self.monitor.a_sop.setStyleSheet(
+            f'QPushButton{{background:{col};color:#0B0F17;border:none;'
+            f'border-radius:{RADIUS_SM}px;padding:4px 14px;font-weight:bold;}}'
+            f'QPushButton:hover{{background:{col};}}')
+        self.monitor.alert_box.show()
+        self.monitor.hero.hide()
+
+        self.drawer.evi.set_event(ev, self.alert_t0)
+        ts = time.strftime('%H:%M:%S', time.localtime(self.alert_t0))
+        if not updating:
+            # [10/17 T-CC07f §2] 'types'·'name' 을 함께 남긴다 — 복합 경보(과전류 +
+            #   협착)가 이력에 주 유형 하나로 남아 "방금 무슨 일" 에 답할 수 없었다.
+            #   'type' 은 그대로 둔다('마지막' 규칙 응답·evlog 가 쓴다).
+            self.incidents.append({'type': et, 'types': list(types),
+                                   'name': name, 'zone': z, 'detected': ts,
+                                   'resolved': None})
+            self.evlog.add(ts, et, z, ev.get('conf', 0), '진행 중')
+        elif self.incidents:
+            # 같은 사건에 유형이 붙은 갱신 — 마지막 항목에 합친다.
+            last = self.incidents[-1]
+            last['types'] = list(dict.fromkeys(
+                (last.get('types') or [last.get('type')]) + types))
+            last['name'] = name
+        self.timeline.add(f'{name} 감지 · {z} 구역 '
+                          f'(판정 점수 {ev.get("conf", 0):.2f})', col)
+        self._recent.appendleft((ts, f'{name} 감지', col))
+        self.dash.set_events(list(self._recent))
+        # ⚠ 순서 주의: show_for() 가 자동조치 배지를 기본 문구
+        #   ('전원 차단 완료')로 되돌린다. 실제 차단기 상태를 읽어 쓰는
+        #   _set_auto_action() 은 반드시 그 다음에 불러야 한다.
+        #   (뒤바뀌어 있어서 본 패널은 주황 '모의값', 드로어는 초록 '차단 완료'로
+        #    같은 사건을 두 가지로 말하고 있었다)
+        self.drawer.sop.show_for(sop_type, title=name, sev=sev)
+        self._set_auto_action(z)
+        if not updating:
+            # 판정 결과를 다시 계산하지 않고 현재 패킷과 확정 즉시조치만 요약한다.
+            # 경보 화면을 가리지 않도록 대화 기록에만 쌓고 팝업은 열지 않는다.
+            self.assistant.system_notice(self.assistant._current_brief(),
+                                         open_drawer=False)
+        self.drawer.ack.show()
+        if self.cfg.autopop.isChecked():
+            self.drawer.open_at(0)
+        # 프롬프트에 넣을 사실은 전부 젯슨이 계산해 보낸 값이다 (evidence/gates).
+        #   노트북이 만든 추정치(PoseEstimator)는 넣지 않는다 — LLM 이 표시용
+        #   추정을 실측처럼 말하게 되면 판단 근거가 오염된다.
+        self.engine.request(sop_type, SopEngineV2.build_facts(ev, self.pkt, 0))
+        self._lock_nav()
+
+    def _set_auto_action(self, z):
+        """자동 차단이 '실제로' 됐는지를 차단기 상태로 확인해서 쓴다.
+
+        ⚠ v1 은 항상 '전원 차단 완료'라고 썼다. 차단기가 미연결이거나 실패한
+          경우에도 완료라고 말하게 된다. 상태를 읽어 다르게 쓴다.
+        """
+        breaker = self.pkt.get('breaker') or {}
+        bs = breaker.get('state') or {}
+        reasons = breaker.get('reason') or {}
+        src = breaker.get('src')
+        off = bs.get(z, 'ON') != 'ON'
+        et = (self.alert or {}).get('type')
+        reason = reasons.get(z)
+        if et not in AUTO_TRIP_EVENTS:
+            if off:
+                why = EVENT_KO.get(reason, reason or '사유 미확인')
+                txt = f'{z} 구역 기존 차단 유지 · {why} (이 경보로 추가 차단 안 함)'
+            else:
+                txt = '경보 전파 완료 · 설비 회로 자동 차단 대상 아님'
+            c, bg = GREEN, BG_OK
+        elif off and reason != et:
+            why = EVENT_KO.get(reason, reason or '사유 미확인')
+            if src == 'modbus':
+                txt, c, bg = f'{z} 구역 기존 차단 유지 · {why}', GREEN, BG_OK
+            else:
+                txt, c, bg = (f'{z} 구역 기존 차단 상태 · {why} '
+                              f'(실측 미확인)'), AMBER, BG_WARN
+        elif off and src == 'modbus':
+            txt, c, bg = f'{z} 구역 작업 대상 설비 회로 차단 완료 · 젯슨 자동 실행', GREEN, BG_OK
+        elif off:
+            txt, c, bg = (f'{z} 구역 차단 신호 발신 (실측 미확인 — '
+                          f'현장 차단 여부를 직접 확인하십시오)'), AMBER, BG_WARN
+        else:
+            txt, c, bg = (f'{z} 구역 설비 회로 차단이 확인되지 않았습니다 — '
+                          f'[전기 설비]에서 확인하십시오'), RED, BG_ALERT
+        self.monitor.auto_lb.setText(txt)
+        self.monitor.auto_lb.setStyleSheet(
+            f'color:{c};border:none;background:transparent;')
+        self.monitor.auto_box.setStyleSheet(
+            f'QFrame{{background:{bg};border:1px solid {c};'
+            f'border-radius:{RADIUS_SM}px;}}')
+        self.drawer.sop.done.setText(txt)
+        self.drawer.sop.done.setStyleSheet(
+            f'color:{c};border:none;background:transparent;')
+        self.drawer.sop.done_box.setStyleSheet(
+            f'QFrame{{background:{bg};border:1px solid {c};'
+            f'border-radius:{RADIUS_SM}px;}}')
+
+    def do_ack(self):
+        """확인함 = 소리·점멸만 끈다. 경보는 그대로 남는다 (ISA-18.2)."""
+        if self.alarm == ST_UNACK:
+            self.alarm = ST_ACK
+            self.timeline.add('경보 확인 처리 — 경보음 정지 (상황은 지속 중)', AMBER)
+            self._lock_nav()
+
+    def do_resolve(self):
+        """상황 종료 = 사람이 현장을 확인했다는 선언. 자동 해제는 없다."""
+        if not core.confirm(self, '상황 종료',
+                            '현장 상황이 해소된 것을 직접 확인하셨습니까?\n\n'
+                            '전원은 자동으로 복구되지 않습니다 (LOTO).\n'
+                            '재투입은 [전기 설비]에서 별도로 진행하십시오.',
+                            yes='해소 확인', no='취소', danger=True):
+            return
+        if self.link:
+            self.link.send_cmd(CMD_RESOLVE)
+        else:
+            # 실운용은 젯슨의 ev.active=false 응답을 받은 뒤에만 해제한다.
+            # 먼저 지우면 현장 UI는 위험, 관제 UI는 정상으로 갈라진다.
+            self.clear_alarm()
+
+    def clear_alarm(self, remote=False):
+        if self.alarm == ST_NORMAL:
+            return
+        self.alarm = ST_NORMAL
+        self.alert = None
+        self.monitor.banner.hide()
+        self.monitor.alert_box.hide()
+        self.monitor.hero.show()
+        self.drawer.ack.hide()
+        self.drawer.close_drawer()
+        self.quiet_since = time.time()
+        ts = time.strftime('%H:%M:%S')
+        for i in reversed(self.incidents):
+            if i['resolved'] is None:
+                i['resolved'] = ts
+                break
+        self.evlog.mark_resolved(ts)
+        self.timeline.add('상황 종료 처리됨' + (' (젯슨)' if remote else ''), GREEN)
+        self._recent.appendleft((ts, '상황 종료', GREEN))
+        self.dash.set_events(list(self._recent))
+        self.assistant.system_notice(self.assistant._current_brief(),
+                                     open_drawer=False)
+        self._lock_nav()
+
+    def _show_pwr(self):
+        self.pwr.refresh()
+        self.pwr.show()
+        self.pwr.raise_()
+
+    def do_restore(self):
+        zs = self.pwr.tripped()
+        if not zs:
+            return
+        if self.restore.ask(zs):
+            if self.link:
+                self.link.send_cmd(CMD_RESTORE, zones=zs)
+            else:
+                for z in zs:
+                    self.pwr.snap[z] = 'ON'
+                self.pwr.refresh()
+            self.timeline.add(f"전원 재투입 요청 · {', '.join(zs)} 구역 (수동)", GREEN)
+
+    # ══════════════════════════════════════════════════════════════════
+    # 세션
+    # ══════════════════════════════════════════════════════════════════
+    def begin_session(self, info):
+        self.zone = info.get('zone', RADAR_ZONE)
+        self.shift = info.get('shift', '주간조')
+        self.operator = info.get('operator', '미지정')
+        self.nav.set_user(self.shift, self.operator)
+        self.monitor.sub.setText(
+            f'{self.zone} {ZONE_KO.get(self.zone, "")} · '
+            f'{PHASE_KO.get(self._phase, "연결 대기")}')
+        if self.prep:
+            self.prep.set_zone(self.zone)
+        self.enter_console()
+
+    def enter_console(self):
+        """감시 진입. 여기서부터 이 앱은 '감시 중'이라고 말할 자격이 있다."""
+        if self.stack.currentIndex() == PG_MON:
+            return
+        if self.quiet_since is None or self.stack.currentIndex() == PG_DASH:
+            self.quiet_since = time.time()
+        self._navigate(PG_MON)
+        self.timeline.add(f'감시 시작 · {self.zone} {ZONE_KO.get(self.zone, "")} · '
+                          f'{self.shift} {self.operator}', GREEN)
+
+    def go_prepare(self):
+        if not self.prep:
+            return
+        self._navigate(PG_PREP)
+
+    # ══════════════════════════════════════════════════════════════════
+    # 0.5초 UI 갱신 (시계 · 점멸 · 경과시간 · stale)
+    # ══════════════════════════════════════════════════════════════════
+    def _tick_summary(self):
+        s = self.monitor.summary
+        s['zone'].setText(f'{self.zone} {ZONE_KO.get(self.zone, "")} · '
+                          f'{ZONE_DEVICE.get(self.zone, "")}')
+        s['who'].setText(f'{self.shift} · {self.operator}')
+        if self.demo:
+            s['rx'].setText('데모 데이터 · 10 Hz')
+            s['rx'].setStyleSheet(f'color:{AMBER};border:none;background:transparent;')
+        else:
+            age = self.link.age() if self.link else None
+            if age is None:
+                s['rx'].setText('수신 없음')
+                c = AMBER
+            else:
+                s['rx'].setText(f'{age:.1f}초 전 · seq {self.link.seq}')
+                c = GREEN if age <= LINK_TIMEOUT else RED
+            s['rx'].setStyleSheet(f'color:{c};border:none;background:transparent;')
+        done = sum(1 for i in self.incidents if i.get('resolved'))
+        s['today'].setText(f'{self.today}건 · 종료 {done}건')
+
+    def tick_ui(self):
+        self.blink = not self.blink
+        self.dash.set_blink(self.blink)      # 평면도 경보 점멸
+        self.monitor.clock.setText(time.strftime('%H:%M:%S'))
+        self.monitor.fit_legend()
+        self.monitor.fit_pose_text()     # 드로어 개폐는 resizeEvent 를 안 일으킨다
+        if self.stack.currentIndex() != PG_MON:
+            return
+        self._tick_summary()
+
+        # 기준 미학습 안내
+        ph = self.pkt.get('phase')
+        if self.prep and ph is not None and ph != PH_LIVE:
+            self.monitor.needcal_lb.setText(
+                '정상 기준이 학습되지 않았습니다 — 빈방 스캔을 실행해야 '
+                '이상을 판별할 수 있습니다' if ph == PH_READY else
+                f'준비 진행 중 · {PHASE_KO.get(ph, ph)} — 현장 준비 화면에서 확인하세요')
+            self.monitor.needcal.show()
+        else:
+            self.monitor.needcal.hide()
+
+        # stale — 화면이 조용히 거짓말하지 않게
+        linked = True
+        if self.link and not self.demo:
+            age = self.link.age()
+            if age is None:
+                linked = False
+                self.scene.set_stale(True, '젯슨 연결 대기 중\n아직 데이터를 받지 못했습니다')
+                self._stale_tiles()
+                self._set_link_label('연결 대기', AMBER)
+            elif age > LINK_TIMEOUT:
+                linked = False
+                self.scene.set_stale(True, f'데이터 없음\n마지막 수신 {int(age)}초 전')
+                self._stale_tiles()
+                self._set_link_label(f'연결 끊김 ({int(age)}s)', RED)
+
+        if self.alarm == ST_NORMAL:
+            # ⚠ 링크가 없으면 '이상 없음'이라고 말하지 않는다.
+            #   감시하지 않는 상태를 초록으로 표시하는 것이 이 앱이 할 수 있는
+            #   가장 위험한 거짓말이다.
+            if not linked:
+                self._hero('—', AMBER, '감시 중단', AMBER, '',
+                           '젯슨에서 데이터를 받지 못하는 동안은 이 화면이 '
+                           '현장 상태를 보장하지 않습니다')
+                return
+            if ph is not None and ph != PH_LIVE:
+                self._hero('—', AMBER, '감시 대기', AMBER, '',
+                           f'{PHASE_KO.get(ph, ph)} — 정상 기준이 학습되기 전까지는 '
+                           f'이상을 판별할 수 없습니다')
+                return
+            q = int(time.time() - (self.quiet_since or time.time()))
+            up = int(time.time() - self.boot_t)
+            extra = ''
+            if self.link and not self.demo and self.link.lost:
+                extra = f' · 패킷 유실 {self.link.lost}'
+            self._hero('✓', GREEN, '이상 없음', TXT,
+                       f'{q // 3600}시간 {q % 3600 // 60}분 무경보',
+                       f'오늘 경보 {self.today}건 · '
+                       f'가동 {up // 3600:02d}:{up % 3600 // 60:02d}{extra}')
+            return
+
+        # 경보 중 — 미확인이면 점멸 + 소리
+        el = int(time.time() - self.alert_t0)
+        unack = (self.alarm == ST_UNACK)
+        sev = (self.alert or {}).get('sev', 'critical')
+        col = sev_color(sev)
+        on = (not unack) or self.blink
+        self.monitor.banner.setStyleSheet(
+            f'QFrame{{background:{SEV_BG_HI.get(sev, BG_ALERT) if on else PANEL};'
+            f'border:{2 if unack else 1}px solid {col if on else EDGE};'
+            f'border-radius:{RADIUS}px;}}')
+        for w in (self.monitor.b_left, self.monitor.b_right):
+            w.setStyleSheet(f'color:{col};border:none;background:transparent;')
+        self.monitor.b_right.setText(
+            f"{el // 60:02d}:{el % 60:02d} 경과 · {'미확인' if unack else '확인됨'}")
+        # ⚠ 주의(warning)도 소리는 낸다. 정지형 이상은 감전·협착일 수 있어
+        #   조용히 넘어가면 안 된다. 다만 확정 사고(critical)보다 드물게 울려
+        #   '가서 확인' 과 '지금 뛰어가' 를 귀로도 구분하게 한다.
+        if unack and self.blink and self.cfg.snd.isChecked():
+            self._beep_n = getattr(self, '_beep_n', 0) + 1
+            if sev == 'critical' or self._beep_n % 4 == 0:
+                QtWidgets.QApplication.beep()
+        et = (self.alert or {}).get('type')
+        context = (self.alert or {}).get('_display_context')
+        z = (self.alert or {}).get('zone') or RADAR_ZONE
+        if et == 'fall_detected':
+            self.monitor.msg.setText(
+                f'작업자가 바닥에 누운 채 {el}초째 움직이지 않습니다.\n'
+                f'{z} {ZONE_KO.get(z, "")} 구역.')
+        elif et == 'fall_suspected':
+            self.monitor.msg.setText(
+                f'낙상 규칙과 RF 판정이 불일치했습니다. 즉시 현장을 확인하십시오.\n'
+                f'{z} {ZONE_KO.get(z, "")} 구역 · {el}초 경과.')
+        elif context:
+            self.monitor.msg.setText(
+                f'{context["name"]} · {z} {ZONE_KO.get(z, "")} 구역에서 '
+                f'{el}초째 지속되고 있습니다.\n현장 확인 전까지 의심 경보입니다.')
+        else:
+            self.monitor.msg.setText(
+                f'{EVENT_KO.get(et, "이상")} · {z} {ZONE_KO.get(z, "")} '
+                f'구역에서 {el}초째 지속되고 있습니다.')
+
+    def _hero(self, icon, icol, title, tcol, quiet, sub):
+        m = self.monitor
+        m.h_ic.setText(icon)
+        m.h_ic.setStyleSheet(f'color:{icol};border:none;background:transparent;')
+        m.h_t.setText(title)
+        m.h_t.setStyleSheet(f'color:{tcol};border:none;background:transparent;')
+        m.h_quiet.setText(quiet)
+        m.h_s.setText(sub)
+
+    def closeEvent(self, e):
+        if self.link:
+            self.link.stop()
+        # keep_alive -1 로 올려 둔 챗봇 모델을 내려 메모리를 돌려준다.
+        if QtCore.qEnvironmentVariable('QT_QPA_PLATFORM') != 'offscreen':
+            try:
+                chat_model_keep(0, timeout=3)
+            except Exception as ex:
+                print(f'[AI] 챗봇 모델 내리기 실패: {ex}  '
+                      f'(ollama stop {CHAT_MODEL})')
+        e.accept()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 11. 진입점
+# ══════════════════════════════════════════════════════════════════════
+def build_app(argv=None):
+    """QApplication + 창을 만들어 돌려준다. (헤드리스 렌더 검증에서도 쓴다)"""
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--live', nargs='?', const='127.0.0.1', default=None,
+                    metavar='젯슨IP', help='젯슨 실데이터 수신 (기본 127.0.0.1)')
+    ap.add_argument('--host', default=None, help='--live 와 동일 (하위호환)')
+    a, _ = ap.parse_known_args(argv)
+    host = a.host or a.live
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    resolve_font()
+    app.setFont(f(F_LABEL))
+    apply_dark_palette(app)
+    pg.setConfigOptions(background=PANEL, foreground=DIM, antialias=True)
+    link = None
+    if host:
+        link = RadarLink(host)
+        print(f'젯슨 {host} 구독 시작 (HELLO 발신 중)…')
+    w = ConsoleV2(link, demo=(host is None))
+    return app, w, link
+
+
+def main():
+    app, w, link = build_app()
+    if link:
+        link.start()
+    w.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == '__main__':
+    main()

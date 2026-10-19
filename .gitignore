@@ -1,0 +1,10 @@
+.env
+*.log
+*.jsonl
+!evidence/eval/*.jsonl
+*.jsonl.bak
+*.candidate.joblib
+__pycache__/
+*.pyc
+output/
+tmp/
