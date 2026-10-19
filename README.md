@@ -70,7 +70,7 @@ flowchart LR
 | 10/18 조건 A·B 비교와 사고 질문 완료 중앙값 34.9초 | [조건 A](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condA_stream_20261018_2253.jsonl) · [조건 B](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_stream_20261018_2251.jsonl) | 느려진 사례도 함께 공개 |
 | 3개 언어모델 비교 | [EXAONE](evidence/eval/multi79_J3_temp0_exaone3.5_20261007_2104.jsonl) · [Gemma](evidence/eval/multi79_J3_temp0_gemma2_20261007_2013.jsonl) · [Qwen](evidence/eval/multi79_J3_temp0_qwen2.5_20261007_2030.jsonl) | 평가 기록의 작성자 필드만 익명화 |
 
-각 실행의 요약 표와 메타데이터도 [평가 기록 폴더](evidence/eval/)에 함께 있습니다.
+각 실행의 요약 표와 메타데이터도 [평가 기록 폴더](https://github.com/radar-guard-dreamup-2026/radar-guard-hanium/tree/main/evidence/eval)에 함께 있습니다.
 
 ## 실행 범위
 
