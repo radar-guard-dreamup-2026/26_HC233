@@ -83,13 +83,17 @@ flowchart LR
 | 10/10 스트리밍 첫 문장 중앙값 4.26초, 사고 질문 첫 문장 중앙값 5.68초 | [평가 JSONL](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_stream_20261010_1517.jsonl) · [실행 메타데이터](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_stream_20261010_1517_meta.json) | 답변 완료 시간과 구분 |
 | 10/10 비스트리밍 사고 질문 완료 중앙값 7.7초 | [평가 JSONL](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_20261010_1434.jsonl) | 같은 평가셋의 비교 실행 |
 | 10/18 조건 A·B 비교와 사고 질문 완료 중앙값 34.9초 | [조건 A](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condA_stream_20261018_2253.jsonl) · [조건 B](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_stream_20261018_2251.jsonl) | 느려진 사례도 함께 공개 |
-| 3개 언어모델 비교 | [EXAONE](evidence/eval/multi79_J3_temp0_exaone3.5_20261007_2104.jsonl) · [Gemma](evidence/eval/multi79_J3_temp0_gemma2_20261007_2013.jsonl) · [Qwen](evidence/eval/multi79_J3_temp0_qwen2.5_20261007_2030.jsonl) | 평가 기록의 작성자 필드만 익명화 |
+| 1차 대비 2차 같은 30문항 비교: 근거 적중 6/12→11/12, 필수 내용 20/38→30/38, 거절 5/6→6/6, 답 잘림 4→0, 응답 중앙값 7.55→5.73초 | [1차 평가 JSONL](evidence/eval/baseline_20261001_1911.jsonl) · [1차 재채점 기록](evidence/eval/baseline_20261001_1911_rescored.md) · [2차 평가 JSONL](evidence/eval/multi61_J3_temp0_exaone3.5_condB_20261009_2107.jsonl) | 2차 측정은 확장 거절 목록으로 채점했다. 1차 거절은 같은 기준으로 재채점한 값(5/6)으로 비교한다. 처음 채점으로는 4/6이다. 2차 수치는 10/09 측정이다. |
+| 모델 선정: 시연 부하 조건 사고 질문 응답 중앙값 EXAONE 7.6초 · gemma2 11.4초 | [EXAONE 평가 JSONL](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_20261008_1636.jsonl) · [EXAONE 메타데이터](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_20261008_1636_meta.json) · [gemma2 평가 JSONL](evidence/eval/final_highsec_1008_J3_temp0_gemma2_condB_20261008_1630.jsonl) · [gemma2 메타데이터](evidence/eval/final_highsec_1008_J3_temp0_gemma2_condB_20261008_1630_meta.json) | 10/08 조건 B 실행의 사고 질문 완료 시간. 메타데이터의 중앙값을 소수 첫째 자리로 반올림했다. |
+| 3개 언어모델 비교 | [EXAONE](evidence/eval/multi79_J3_temp0_exaone3.5_20261007_2104.jsonl) · [Gemma](evidence/eval/multi79_J3_temp0_gemma2_20261007_2013.jsonl) · [Qwen](evidence/eval/multi79_J3_temp0_qwen2.5_20261007_2030.jsonl) | 평가 기록의 작성자 필드만 익명화. 79문항·단독 조건 측정. 위 7.6초·11.4초의 원본은 아니다. |
 
 각 실행의 요약 표와 메타데이터도 [평가 기록 폴더](https://github.com/radar-guard-dreamup-2026/radar-guard-hanium/tree/main/evidence/eval)에 함께 있습니다.
 
 ## 실행 범위
 
 관제 화면의 데모 모드는 실장비 없이 화면·통신 형식을 확인하는 용도입니다. 실제 판정과 회로 차단을 재현하려면 레이더·젯슨·계측·릴레이, 모델 배포본, 현장 설정이 별도로 필요합니다. 공개본의 코드를 현장 안전 장치에 바로 배포하는 사용법은 제공하지 않습니다.
+
+현장 작업자 화면의 재투입 승인 기본값은 데모용이며, 실제 운용·시연에서는 `RADAR_ADMIN_ID` / `RADAR_ADMIN_PW` 환경변수로 교체합니다. 오조작 방지 관문이며 보안 인증이 아닙니다(제작설계서 29쪽).
 
 PowerShell, 이 저장소 루트에서:
 
