@@ -47,6 +47,7 @@ flowchart LR
 | [facility.py](src/facility.py) | 시설 평면도 좌표와 표시 영역 | RG-SRC-021 |
 | [radar_core.py](src/radar_core.py) · [console_ui.py](src/console_ui.py) | 관제 화면과 공식 원문 조회, 관제 AI | RG-SRC-022 |
 | [user_ui.py](src/user_ui.py) | 현장 작업자 화면 | RG-SRC-023 |
+| [src/eval/](https://github.com/radar-guard-dreamup-2026/radar-guard-hanium/tree/main/src/eval) | 경보 화면 고정 원문 15문장·관제 AI 근거 구간·질문 경로와 스트리밍 시험 | RG-SRC-022 검증 자료 |
 
 `src/`에는 화면에 필요한 3D 자산, 현재 보관된 모델 파일과 검증 스크립트도 함께 두었습니다. 레이더 설정 파일, 현장 DB, 원본 실측 데이터와 장비별 배포 환경은 포함하지 않았습니다.
 
