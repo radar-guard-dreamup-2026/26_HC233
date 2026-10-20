@@ -61,7 +61,7 @@ flowchart LR
 | [facility.py](src/facility.py) | 시설 평면도 좌표와 표시 영역 | RG-SRC-021 |
 | [radar_core.py](src/radar_core.py) · [console_ui.py](src/console_ui.py) | 관제 화면과 공식 원문 조회, 관제 AI | RG-SRC-022 |
 | [user_ui.py](src/user_ui.py) | 현장 작업자 화면 | RG-SRC-023 |
-| [src/eval/](https://github.com/radar-guard-dreamup-2026/radar-guard-hanium/tree/main/src/eval) | 경보 화면 고정 원문 15문장·관제 AI 근거 구간·질문 경로와 스트리밍 시험 | RG-SRC-022 검증 자료 |
+| [src/eval/](https://github.com/radar-guard-dreamup-2026/26_HC233/tree/main/src/eval) | 경보 화면 고정 원문 15문장·관제 AI 근거 구간·질문 경로와 스트리밍 시험 | RG-SRC-022 검증 자료 |
 
 `src/`에는 화면에 필요한 3D 자산, 현재 보관된 모델 파일과 검증 스크립트도 함께 두었습니다. 레이더 설정 파일, 현장 DB, 원본 실측 데이터와 장비별 배포 환경은 포함하지 않았습니다.
 
@@ -87,7 +87,7 @@ flowchart LR
 | 모델 선정: 시연 부하 조건 사고 질문 응답 중앙값 EXAONE 7.6초 · gemma2 11.4초 | [EXAONE 평가 JSONL](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_20261008_1636.jsonl) · [EXAONE 메타데이터](evidence/eval/final_highsec_1008_J3_temp0_exaone3.5_condB_20261008_1636_meta.json) · [gemma2 평가 JSONL](evidence/eval/final_highsec_1008_J3_temp0_gemma2_condB_20261008_1630.jsonl) · [gemma2 메타데이터](evidence/eval/final_highsec_1008_J3_temp0_gemma2_condB_20261008_1630_meta.json) | 10/08 조건 B 실행의 사고 질문 완료 시간. 메타데이터의 중앙값을 소수 첫째 자리로 반올림했다. |
 | 3개 언어모델 비교 | [EXAONE](evidence/eval/multi79_J3_temp0_exaone3.5_20261007_2104.jsonl) · [Gemma](evidence/eval/multi79_J3_temp0_gemma2_20261007_2013.jsonl) · [Qwen](evidence/eval/multi79_J3_temp0_qwen2.5_20261007_2030.jsonl) | 평가 기록의 작성자 필드만 익명화. 79문항·단독 조건 측정. 위 7.6초·11.4초의 원본은 아니다. |
 
-각 실행의 요약 표와 메타데이터도 [평가 기록 폴더](https://github.com/radar-guard-dreamup-2026/radar-guard-hanium/tree/main/evidence/eval)에 함께 있습니다.
+각 실행의 요약 표와 메타데이터도 [평가 기록 폴더](https://github.com/radar-guard-dreamup-2026/26_HC233/tree/main/evidence/eval)에 함께 있습니다.
 
 ## 실행 범위
 
